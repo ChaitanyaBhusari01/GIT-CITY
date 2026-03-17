@@ -137,15 +137,15 @@ const useStore = create((set, get) => ({
         set({ loading: true, error: null });
 
         try {
-            const loadRes = await axios.post(`${API_BASE}/load`, { url: repoUrl });
+            const loadRes = await axios.post(`${API_BASE}/repo/load`, { url: repoUrl });
             const { owner, repo } = loadRes.data;
             set({ owner, repoName: repo });
 
             const [commitsRes, contribsRes, branchesRes, fileStatsRes] = await Promise.all([
-                axios.get(`${API_BASE}/commits`),
-                axios.get(`${API_BASE}/contributors`),
-                axios.get(`${API_BASE}/branches`),
-                axios.get(`${API_BASE}/file-stats`)
+                axios.get(`${API_BASE}/repo/commits`),
+                axios.get(`${API_BASE}/repo/contributors`),
+                axios.get(`${API_BASE}/repo/branches`),
+                axios.get(`${API_BASE}/repo/file-stats`)
             ]);
 
             const commits = commitsRes.data;
@@ -173,7 +173,7 @@ const useStore = create((set, get) => ({
 
     fetchTree: async (sha) => {
         try {
-            const treeRes = await axios.get(`${API_BASE}/tree`, { params: { sha } });
+            const treeRes = await axios.get(`${API_BASE}/repo/tree`, { params: { sha } });
             set({ tree: treeRes.data, loading: false });
         } catch (err) {
             set({ error: err.response?.data?.error || err.message, loading: false });
@@ -196,7 +196,7 @@ const useStore = create((set, get) => ({
 
         // Fetch file history
         try {
-            const res = await axios.get(`${API_BASE}/file-history`, { params: { path: fileData.path } });
+            const res = await axios.get(`${API_BASE}/repo/file-history`, { params: { path: fileData.path } });
             set({ fileHistory: res.data, fileHistoryLoading: false });
         } catch (err) {
             set({ fileHistoryLoading: false });
@@ -205,7 +205,7 @@ const useStore = create((set, get) => ({
         // Fetch dependencies if it's a JS/TS file
         if (/\.(jsx?|tsx?)$/.test(fileData.path)) {
             try {
-                const response = await axios.get(`${API_BASE}/dependencies?path=${encodeURIComponent(fileData.path)}`);
+                const response = await axios.get(`${API_BASE}/repo/dependencies?path=${encodeURIComponent(fileData.path)}`);
                 set({ selectedFileDependencies: response.data || [] });
             } catch (err) {
                 console.error('Failed to fetch file dependencies:', err);
@@ -244,7 +244,7 @@ const useStore = create((set, get) => ({
     // Commit Graph actions
     fetchCommitGraph: async () => {
         try {
-            const res = await axios.get(`${API_BASE}/commit-graph`);
+            const res = await axios.get(`${API_BASE}/repo/commit-graph`);
             set({ commitGraph: res.data });
         } catch (err) {
             console.warn('Failed to fetch commit graph:', err.message);
@@ -288,7 +288,7 @@ const useStore = create((set, get) => ({
         };
 
         try {
-            const res = await axios.post(`${API_BASE}/ai-summary`, stats);
+            const res = await axios.post(`${API_BASE}/repo/ai-summary`, stats);
             set({ aiSummary: res.data.summary, aiSummaryLoading: false });
         } catch (err) {
             set({
@@ -322,7 +322,7 @@ const useStore = create((set, get) => ({
             set({ aiChatMessages: newMessages, aiChatLoading: true });
 
             try {
-                const res = await axios.post(`${API_BASE}/ai-chat`, {
+                const res = await axios.post(`${API_BASE}/repo/ai-chat`, {
                     filePath: path,
                     fileContent: currentFileContent.content,
                     messages: [initMessage]
@@ -354,7 +354,7 @@ const useStore = create((set, get) => ({
         });
 
         try {
-            const res = await axios.post(`${API_BASE}/ai-chat`, {
+            const res = await axios.post(`${API_BASE}/repo/ai-chat`, {
                 filePath: path,
                 fileContent: currentFileContent.content,
                 messages: updatedMsgs
