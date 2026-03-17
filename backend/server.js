@@ -18,14 +18,19 @@ const limiter = rateLimit({
 
 // ─── CORS: restrict to known origins ───
 const allowedOrigins = process.env.NODE_ENV === 'production'
-    ? ['https://git-city-iota.vercel.app/'] // Replace with your actual domain
+    ? (process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : ['https://git-city-iota.vercel.app'])
     : ['http://localhost:5173', 'http://localhost:3000']; // Allow local dev
 
 app.use(cors({
     origin: function (origin, callback) {
         // Allow requests with no origin (like mobile apps or curl requests)
         if (!origin) return callback(null, true);
-        if (allowedOrigins.indexOf(origin) !== -1) {
+
+        // Normalize origin (remove trailing slash)
+        const normalized = origin.replace(/\/$/, '');
+        const normalizedAllowed = allowedOrigins.map(o => o.replace(/\/$/, ''));
+
+        if (normalizedAllowed.indexOf(normalized) !== -1) {
             callback(null, true);
         } else {
             callback(new Error('Not allowed by CORS'));
