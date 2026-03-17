@@ -18,7 +18,7 @@ const limiter = rateLimit({
 
 // ─── CORS: restrict to known origins ───
 const allowedOrigins = process.env.NODE_ENV === 'production'
-    ? ['https://your-frontend-domain.com'] // Replace with your actual domain
+    ? ['https://git-city-iota.vercel.app/'] // Replace with your actual domain
     : ['http://localhost:5173', 'http://localhost:3000']; // Allow local dev
 
 app.use(cors({
