@@ -2,11 +2,38 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+// ─── Rate limiting: 100 requests per 15 minutes per IP ───
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: 'Too many requests from this IP, please try again later.',
+    standardHeaders: true,
+    legacyHeaders: false,
+});
+
+// ─── CORS: restrict to known origins ───
+const allowedOrigins = process.env.NODE_ENV === 'production'
+    ? ['https://your-frontend-domain.com'] // Replace with your actual domain
+    : ['http://localhost:5173', 'http://localhost:3000']; // Allow local dev
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // Allow requests with no origin (like mobile apps or curl requests)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    }
+}));
+
+app.use(limiter);
 app.use(express.json());
 
 // In-memory store for the currently loaded repo
@@ -14,9 +41,10 @@ let currentRepo = { owner: null, repo: null };
 
 const GITHUB_API = 'https://api.github.com';
 
-// ─── In-memory cache with 5-minute TTL ───────────────────────────────────────
+// ─── In-memory cache with 5-minute TTL and size limit ───────────────────────────────────────
 const cache = {};
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const MAX_CACHE_ENTRIES = 1000; // Limit total cache entries to prevent memory growth
 
 function getCacheKey(owner, repo) {
     return `${owner}/${repo}`;
@@ -26,7 +54,9 @@ function getCache(owner, repo, field) {
     const key = getCacheKey(owner, repo);
     const entry = cache[key]?.[field];
     if (entry && Date.now() - entry.timestamp < CACHE_TTL) {
-        console.log(`[CACHE HIT] ${key} → ${field}`);
+        if (process.env.NODE_ENV !== 'production') {
+            console.log(`[CACHE HIT] ${key} → ${field}`);
+        }
         return entry.data;
     }
     return null;
@@ -35,6 +65,19 @@ function getCache(owner, repo, field) {
 function setCache(owner, repo, field, data) {
     const key = getCacheKey(owner, repo);
     if (!cache[key]) cache[key] = {};
+
+    // Enforce cache size limit
+    const totalEntries = Object.keys(cache).reduce((sum, k) => sum + Object.keys(cache[k]).length, 0);
+    if (totalEntries >= MAX_CACHE_ENTRIES) {
+        // Simple eviction: remove oldest entry
+        const oldestKey = Object.keys(cache).sort((a, b) => {
+            const aTime = Math.min(...Object.values(cache[a]).map(e => e.timestamp));
+            const bTime = Math.min(...Object.values(cache[b]).map(e => e.timestamp));
+            return aTime - bTime;
+        })[0];
+        delete cache[oldestKey];
+    }
+
     cache[key][field] = { data, timestamp: Date.now() };
 }
 
