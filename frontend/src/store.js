@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import axios from 'axios';
 
-const API_BASE = 'http://localhost:3001/repo';
+const API_BASE = 'https://git-city-tsy3.onrender.com/';
 
 const useStore = create((set, get) => ({
     repoUrl: '',
