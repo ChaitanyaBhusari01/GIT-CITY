@@ -95,7 +95,7 @@ const useStore = create((set, get) => ({
         }
 
         try {
-            const res = await axios.get(`${API_BASE}/file`, {
+            const res = await axios.get(`${API_BASE}/repo/file`, {
                 params: { repoUrl, path },
                 signal: controller.signal
             });
