@@ -12,17 +12,32 @@ jobs:
   security-scan:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: read
+      security-events: write
+
     steps:
+
       - name: Clone target repository
         run: |
           git clone --depth 1 "${{ inputs.repository }}" target-repo
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
+        uses: github/codeql-action/init@v4
         with:
-          languages: javascript
+          languages: javascript-typescript
+          source-root: target-repo
+          build-mode: none
 
-      - name: Run CodeQL Analysis
-        uses: github/codeql-action/analyze@v3
+      - name: Analyze repository
+        uses: github/codeql-action/analyze@v4
         with:
-          category: "/manual-scan"
+          upload: false
+          output: sarif-results
+
+      - name: Upload CodeQL report
+        uses: actions/upload-artifact@v4
+        with:
+          name: codeql-security-report
+          path: sarif-results/
+          retention-days: 7
