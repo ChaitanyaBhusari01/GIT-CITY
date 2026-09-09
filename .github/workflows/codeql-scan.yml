@@ -23,7 +23,7 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
-          languages: javascript-typescript
+          languages: javascript
           source-root: target-repo
           build-mode: none
 
@@ -33,7 +33,7 @@ jobs:
           upload: false
           output: codeql-results
 
-      - name: Save CodeQL SARIF report
+      - name: Upload SARIF report
         uses: actions/upload-artifact@v4
         with:
           name: codeql-security-report
