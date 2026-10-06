@@ -1,26 +1,21 @@
 from app.parser import parse_code
-
+from app.chunker import walk_tree
+from app.chunker import chunk_code
 
 code = """
-const express = require("express");
+def hello(name):
+    return "Hello " + name
 
-function hello(name) {
-    return "Hello " + name;
-}
+def add(a, b):
+    return a + b
 
-function add(a, b) {
-    return a + b;
-}
-
-class UserService {
-    getUser(id) {
-        return id;
-    }
-}
+class UserService:
+    def get_user(self, user_id):
+        return user_id
 """
 
 
-tree = parse_code(code, "javascript")
+tree = parse_code(code, "python")
 
 root = tree.root_node
 
@@ -36,3 +31,22 @@ for child in root.named_children:
         "| End:",
         child.end_point
     )
+
+def print_tree(node, indent=0):
+    print(" " * indent + node.type)
+
+    for child in node.children:
+        print_tree(child,indent + 2)
+
+print_tree(root)
+
+chunks = chunk_code(
+    tree,
+    code,
+    "src/test.js",
+    "javascript"
+)
+
+print("\nCHUNKS:")
+for chunk in chunks:
+    print(chunk)
