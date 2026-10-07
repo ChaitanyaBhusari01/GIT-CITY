@@ -1,50 +1,15 @@
+from app.language_profiles import LANGUAGE_PROFILES
 
+def get_symbol_name(node, language, code):
+    name_node = node.child_by_field_name("name")
 
-    
+    if name_node is None:
+        return None
 
-CHUNK_NODE_TYPES = {
-    "javascript": {
-        "function_declaration",
-        "class_declaration",
-        "method_definition",
-    },
-
-    "typescript": {
-
-    },
-
-    "java": {
-
-    },
-
-    "c": {
-
-    },
-
-    "cpp": {
-
-    },
-
-    "python": {
-        "function_definition",
-        "class_definition",
-    },
-}
-
-def get_symbol_name(node,language,code):
-    if language == "javascript":
-        name_node = node.named_children[0]   # the first child
-        name = code[name_node.start_byte:name_node.end_byte]
-        return name
-
-    if language == "python":
-        name_node = node.named_children[0]
-        name = code[name_node.start_byte:name_node.end_byt]
-        return name
-
+    return code[name_node.start_byte:name_node.end_byte]
 def walk_tree(node, language, code, file_path, chunks):
     node_type = node.type
-    allowed_types = CHUNK_NODE_TYPES[language]
+    allowed_types = LANGUAGE_PROFILES[language]["chunk_nodes"]
 
     if node_type in allowed_types:
         source = code[node.start_byte : node.end_byte] #tree-sitter gives codes byte positions start adn end(this is actual code)

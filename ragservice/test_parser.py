@@ -43,8 +43,8 @@ print_tree(root)
 chunks = chunk_code(
     tree,
     code,
-    "src/test.js",
-    "javascript"
+    "src/test.py",
+    "python"
 )
 
 print("\nCHUNKS:")

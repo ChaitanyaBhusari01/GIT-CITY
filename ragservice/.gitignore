@@ -4,3 +4,5 @@ test_parser.py
 test_js_nodes.py
 test_ingestion.py 
 test_file_filter.py
+test_sarif.py
+test_anchor.py
