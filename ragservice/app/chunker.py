@@ -1,78 +1,86 @@
+"""Language-independent structural chunking using Tree-sitter language profiles."""
+
+from __future__ import annotations
+
+from app.language_profiles import LANGUAGE_PROFILES
 
 
-    
+def get_symbol_name(node, language: str, code: str) -> str | None:
+    """Extract a symbol name through Tree-sitter's common 'name' field."""
+    name_node = node.child_by_field_name("name")
+    if name_node is None:
+        return None
+    return code[name_node.start_byte:name_node.end_byte]
 
-CHUNK_NODE_TYPES = {
-    "javascript": {
-        "function_declaration",
-        "class_declaration",
-        "method_definition",
-    },
 
-    "typescript": {
+def _walk_tree(node, language: str, code: str, file_path: str, chunks: list[dict]) -> None:
+    profile = LANGUAGE_PROFILES.get(language, {})
+    allowed_types = profile.get("chunk_nodes", set())
 
-    },
-
-    "java": {
-
-    },
-
-    "c": {
-
-    },
-
-    "cpp": {
-
-    },
-
-    "python": {
-        "function_definition",
-        "class_definition",
-    },
-}
-
-def get_symbol_name(node,language,code):
-    if language == "javascript":
-        name_node = node.named_children[0]   # the first child
-        name = code[name_node.start_byte:name_node.end_byte]
-        return name
-
-    if language == "python":
-        name_node = node.named_children[0]
-        name = code[name_node.start_byte:name_node.end_byt]
-        return name
-
-def walk_tree(node, language, code, file_path, chunks):
-    node_type = node.type
-    allowed_types = CHUNK_NODE_TYPES[language]
-
-    if node_type in allowed_types:
-        source = code[node.start_byte : node.end_byte] #tree-sitter gives codes byte positions start adn end(this is actual code)
-        start_line = node.start_point.row + 1   #its to get the line number (tree - sitter assumes or index it from 0 , so thats why +1)
-        end_line = node.end_point.row + 1
-        name = get_symbol_name(node,language,code)
-
-        chunk = {                           #creating a chunk
-            "file_path": file_path,
-            "language": language,
-            "type": node_type,
-            "name": name,
-            "code": source,
-            "start_line": start_line,
-            "end_line": end_line,
-        }
-
-        chunks.append(chunk)
+    if node.type in allowed_types:
+        chunks.append(
+            {
+                "file_path": file_path,
+                "language": language,
+                "type": node.type,
+                "name": get_symbol_name(node, language, code),
+                "code": code[node.start_byte:node.end_byte],
+                "start_line": node.start_point.row + 1,
+                "end_line": node.end_point.row + 1,
+            }
+        )
 
     for child in node.named_children:
-        walk_tree(child, language, code, file_path, chunks)
+        _walk_tree(child, language, code, file_path, chunks)
 
-    
 
-def chunk_code(tree,code,file_path,language):
-    root = tree.root_node
+def _line_chunks(
+    code: str,
+    file_path: str,
+    language: str,
+    *,
+    max_lines: int = 100,
+    overlap_lines: int = 15,
+) -> list[dict]:
+    """Language-neutral fallback for grammars without a structural profile."""
+    lines = code.splitlines()
+    if not lines:
+        return []
+
     chunks = []
+    start = 0
+    while start < len(lines):
+        end = min(start + max_lines, len(lines))
+        source = "\n".join(lines[start:end])
+        if source.strip():
+            chunks.append(
+                {
+                    "file_path": file_path,
+                    "language": language,
+                    "type": "line_chunk",
+                    "name": None,
+                    "code": source,
+                    "start_line": start + 1,
+                    "end_line": end,
+                }
+            )
+        if end >= len(lines):
+            break
+        start = max(start + 1, end - overlap_lines)
 
-    walk_tree(root,language,code,file_path,chunks)
-    
+    return chunks
+
+
+def chunk_code(tree, code: str, file_path: str, language: str) -> list[dict]:
+    """Create structural chunks when profiled, else overlapping line chunks."""
+    if language not in LANGUAGE_PROFILES:
+        return _line_chunks(code, file_path, language)
+
+    chunks: list[dict] = []
+    _walk_tree(tree.root_node, language, code, file_path, chunks)
+
+    # Files with no recognized top-level symbols still need to be indexable.
+    if not chunks and code.strip():
+        return _line_chunks(code, file_path, language)
+
     return chunks
