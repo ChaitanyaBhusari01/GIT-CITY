@@ -1,10 +1,8 @@
-"""Vector similarity retrieval for repository code chunks."""
+"""Vector similarity retrieval for code chunks stored in pgvector."""
 
 from __future__ import annotations
 
 from typing import Any
-
-import psycopg
 
 from app.vector_store import TABLE_NAME, connect_database
 
@@ -24,14 +22,13 @@ def search_chunks(
         raise ValueError("query_embedding must not be empty.")
 
     filters = ["repository_id = %s", "commit_sha = %s"]
-    params: list[Any] = [repository_id, commit_sha]
+    params: list[Any] = [query_embedding, repository_id, commit_sha]
 
     if exclude_file:
         filters.append("file_path <> %s")
         params.append(exclude_file)
 
-    params.append(query_embedding)
-    params.append(top_k)
+    params.extend([query_embedding, top_k])
 
     query = f"""
         SELECT
@@ -50,23 +47,13 @@ def search_chunks(
         LIMIT %s
     """
 
-    # The vector placeholder is used once in the selected score and once in ORDER BY.
-    # Keep the repository filters before both vector arguments to match SQL order.
-    params = [repository_id, commit_sha]
-    if exclude_file:
-        params.append(exclude_file)
-    params.extend([query_embedding, query_embedding, top_k])
-
     conn = connect_database()
     try:
         with conn.cursor() as cursor:
             cursor.execute(query, params)
             rows = cursor.fetchall()
             return [
-                {
-                    **row,
-                    "similarity": float(row["similarity"]),
-                }
+                {**row, "similarity": float(row["similarity"])}
                 for row in rows
             ]
     finally:
