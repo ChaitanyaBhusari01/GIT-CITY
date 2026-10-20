@@ -14,7 +14,7 @@ const LanguageStats = () => {
     const maxPercentage = stats[0]?.percentage || 1;
 
     return (
-        <div className="absolute left-4 top-[200px] w-72 bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl pointer-events-auto z-20 overflow-hidden custom-shadow">
+        <div className="absolute right-4 top-44 sm:top-40 lg:top-28 w-72 max-h-[60vh] bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl pointer-events-auto z-40 overflow-hidden custom-shadow">
             {/* Header */}
             <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/50">
                 <div className="flex items-center gap-2">
@@ -28,7 +28,7 @@ const LanguageStats = () => {
 
             {/* Stats list */}
             <div className="p-3 max-h-[300px] overflow-y-auto space-y-2">
-                {stats.map(({ language, count, percentage }) => (
+                {stats.map(({ language, percentage }) => (
                     <div key={language} className="flex items-center gap-2">
                         {/* Color dot */}
                         <div

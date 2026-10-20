@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import useStore from '../store';
 import { X, Send, Bot, User, Loader2, AlertCircle, Sparkles, MessageSquare } from 'lucide-react';
 
@@ -10,8 +10,7 @@ const AIChatPanel = () => {
         aiChatMessages,
         aiChatLoading,
         aiChatError,
-        sendAIChatMessage,
-        currentFileContent
+        sendAIChatMessage
     } = useStore();
 
     const [input, setInput] = useState('');
@@ -19,7 +18,7 @@ const AIChatPanel = () => {
     const inputRef = useRef(null);
 
     const filePath = selectedFile?.path;
-    const messages = filePath ? (aiChatMessages[filePath] || []) : [];
+    const messages = useMemo(() => filePath ? (aiChatMessages[filePath] || []) : [], [filePath, aiChatMessages]);
 
     // Auto-scroll to bottom when messages change
     useEffect(() => {
@@ -49,8 +48,12 @@ const AIChatPanel = () => {
     // Simple markdown-like rendering for AI responses
     const renderContent = (content) => {
         return content.split('\n').map((line, i) => {
+            // Escape model output before adding the small set of supported markup.
+            let rendered = line.replace(/[&<>"']/g, (char) => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[char]);
             // Bold
-            let rendered = line.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+            rendered = rendered.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
             // Inline code
             rendered = rendered.replace(/`([^`]+)`/g, '<code class="bg-slate-700/60 px-1.5 py-0.5 rounded text-blue-300 text-xs font-mono">$1</code>');
             // Bullet points

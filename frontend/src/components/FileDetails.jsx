@@ -25,7 +25,7 @@ const FileDetails = () => {
         .slice(0, 5);
 
     return (
-        <div className="absolute left-4 top-[200px] bottom-24 w-96 bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl pointer-events-auto z-30 flex flex-col overflow-hidden custom-shadow">
+        <div className="absolute left-4 top-[200px] bottom-[220px] max-h-[calc(100vh-300px)] w-96 max-w-[calc(100vw-2rem)] bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl pointer-events-auto z-30 flex flex-col overflow-hidden custom-shadow">
             {/* Header */}
             <div className="flex items-center justify-between p-4 border-b border-slate-700">
                 <div className="flex items-center gap-2 min-w-0">

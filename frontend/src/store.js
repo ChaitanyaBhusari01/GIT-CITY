@@ -1,7 +1,10 @@
 import { create } from 'zustand';
 import axios from 'axios';
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'https://git-city-tsy3.onrender.com';
+const API_BASE = import.meta.env.VITE_API_BASE || (import.meta.env.DEV
+    ? 'http://localhost:3001'
+    : 'https://git-city-tsy3.onrender.com');
+let repoLoadId = 0;
 
 const useStore = create((set, get) => ({
     repoUrl: '',
@@ -10,6 +13,7 @@ const useStore = create((set, get) => ({
     commits: [],
     currentCommitIndex: 0,
     tree: [],
+    treeCommitSha: null,
     fileStats: {},
     contributors: [],
     branches: [],
@@ -55,20 +59,23 @@ const useStore = create((set, get) => ({
     showAIChat: false,
 
     setRepoUrl: (url) => {
+        repoLoadId++;
+        get()._abortController?.abort();
         set({
-            repoUrl: url, commits: [], tree: [], contributors: [], branches: [],
+            repoUrl: url, commits: [], tree: [], treeCommitSha: null, fileStats: {}, contributors: [], branches: [],
             currentCommitIndex: 0, error: null, owner: null, repoName: null,
             languageFilter: null,
             selectedFile: null, selectedFileDependencies: [], fileHistory: [],
             commitGraph: [], aiSummary: null, aiSummaryError: null,
             currentFileContent: null, showCodeViewer: false, codeViewerError: null,
+            fileContentCache: {}, _abortController: null,
             aiChatMessages: {}, showAIChat: false, aiChatError: null
         });
     },
 
     fetchFileContent: async (path) => {
         const state = get();
-        const { repoUrl, fileContentCache } = state;
+        const { repoUrl, fileContentCache, owner, repoName } = state;
         if (!repoUrl || !path) return;
 
         // Cancel previous request if any
@@ -96,7 +103,7 @@ const useStore = create((set, get) => ({
 
         try {
             const res = await axios.get(`${API_BASE}/repo/file`, {
-                params: { repoUrl, path },
+                params: { owner, repo: repoName, path },
                 signal: controller.signal
             });
 
@@ -133,20 +140,23 @@ const useStore = create((set, get) => ({
     fetchRepoData: async () => {
         const { repoUrl } = get();
         if (!repoUrl) return;
+        const loadId = ++repoLoadId;
 
         set({ loading: true, error: null });
 
         try {
             const loadRes = await axios.post(`${API_BASE}/repo/load`, { url: repoUrl });
             const { owner, repo } = loadRes.data;
+            if (loadId !== repoLoadId) return;
             set({ owner, repoName: repo });
 
-            const [commitsRes, contribsRes, branchesRes, fileStatsRes] = await Promise.all([
-                axios.get(`${API_BASE}/repo/commits`),
-                axios.get(`${API_BASE}/repo/contributors`),
-                axios.get(`${API_BASE}/repo/branches`),
-                axios.get(`${API_BASE}/repo/file-stats`)
+            const params = { owner, repo };
+            const [commitsRes, contribsRes, branchesRes] = await Promise.all([
+                axios.get(`${API_BASE}/repo/commits`, { params }),
+                axios.get(`${API_BASE}/repo/contributors`, { params }),
+                axios.get(`${API_BASE}/repo/branches`, { params })
             ]);
+            if (loadId !== repoLoadId) return;
 
             const commits = commitsRes.data;
             set({
@@ -154,12 +164,12 @@ const useStore = create((set, get) => ({
                 commits,
                 contributors: contribsRes.data,
                 branches: branchesRes.data,
-                fileStats: fileStatsRes.data,
+                fileStats: {},
                 currentCommitIndex: 0
             });
 
             if (commits.length > 0) {
-                await get().fetchTree(commits[0].hash);
+                await get().fetchTree(commits[0].hash, loadId);
             } else {
                 set({ loading: false, error: 'No commits found.' });
             }
@@ -167,28 +177,44 @@ const useStore = create((set, get) => ({
             // Fetch commit graph data in background
             get().fetchCommitGraph();
         } catch (err) {
+            if (loadId !== repoLoadId) return;
             set({ error: err.response?.data?.error || err.message, loading: false });
         }
     },
 
-    fetchTree: async (sha) => {
+    fetchTree: async (sha, loadId = repoLoadId) => {
         try {
-            const treeRes = await axios.get(`${API_BASE}/repo/tree`, { params: { sha } });
-            set({ tree: treeRes.data, loading: false });
+            const { owner, repoName } = get();
+            const treeRes = await axios.get(`${API_BASE}/repo/tree`, { params: { owner, repo: repoName, sha } });
+            if (loadId !== repoLoadId || get().commits[get().currentCommitIndex]?.hash !== sha) return;
+            set({ tree: treeRes.data, treeCommitSha: sha, loading: false });
         } catch (err) {
+            if (loadId !== repoLoadId || get().commits[get().currentCommitIndex]?.hash !== sha) return;
             set({ error: err.response?.data?.error || err.message, loading: false });
+        }
+    },
+
+    previewCommitIndex: (index) => {
+        const { commits } = get();
+        if (index >= 0 && index < commits.length) {
+            set({ currentCommitIndex: index });
         }
     },
 
     setCommitIndex: async (index) => {
         const { commits } = get();
         if (index >= 0 && index < commits.length) {
-            set({ currentCommitIndex: index, loading: true });
-            await get().fetchTree(commits[index].hash);
+            const targetSha = commits[index].hash;
+            const treeIsCurrent = get().treeCommitSha === targetSha;
+            set({ currentCommitIndex: index, loading: !treeIsCurrent });
+            if (!treeIsCurrent) {
+                await get().fetchTree(targetSha);
+            }
         }
     },
 
     selectFile: async (fileData) => {
+        const { owner, repoName } = get();
         set({ selectedFile: fileData, selectedFileDependencies: [], fileHistoryLoading: true, fileHistory: [] });
 
         // Trigger fetch for code viewer
@@ -196,20 +222,26 @@ const useStore = create((set, get) => ({
 
         // Fetch file history
         try {
-            const res = await axios.get(`${API_BASE}/repo/file-history`, { params: { path: fileData.path } });
+            const res = await axios.get(`${API_BASE}/repo/file-history`, { params: { owner, repo: repoName, path: fileData.path } });
+            if (get().owner !== owner || get().repoName !== repoName || get().selectedFile?.path !== fileData.path) return;
             set({ fileHistory: res.data, fileHistoryLoading: false });
-        } catch (err) {
-            set({ fileHistoryLoading: false });
+        } catch {
+            if (get().owner === owner && get().repoName === repoName && get().selectedFile?.path === fileData.path) {
+                set({ fileHistoryLoading: false });
+            }
         }
 
         // Fetch dependencies if it's a JS/TS file
         if (/\.(jsx?|tsx?)$/.test(fileData.path)) {
             try {
-                const response = await axios.get(`${API_BASE}/repo/dependencies?path=${encodeURIComponent(fileData.path)}`);
+                const response = await axios.get(`${API_BASE}/repo/dependencies`, { params: { owner, repo: repoName, path: fileData.path } });
+                if (get().owner !== owner || get().repoName !== repoName || get().selectedFile?.path !== fileData.path) return;
                 set({ selectedFileDependencies: response.data || [] });
             } catch (err) {
                 console.error('Failed to fetch file dependencies:', err);
-                set({ selectedFileDependencies: [] });
+                if (get().owner === owner && get().repoName === repoName && get().selectedFile?.path === fileData.path) {
+                    set({ selectedFileDependencies: [] });
+                }
             }
         }
     },
@@ -244,7 +276,9 @@ const useStore = create((set, get) => ({
     // Commit Graph actions
     fetchCommitGraph: async () => {
         try {
-            const res = await axios.get(`${API_BASE}/repo/commit-graph`);
+            const { owner, repoName } = get();
+            const res = await axios.get(`${API_BASE}/repo/commit-graph`, { params: { owner, repo: repoName } });
+            if (get().owner !== owner || get().repoName !== repoName) return;
             set({ commitGraph: res.data });
         } catch (err) {
             console.warn('Failed to fetch commit graph:', err.message);
@@ -261,7 +295,8 @@ const useStore = create((set, get) => ({
     },
 
     generateAISummary: async () => {
-        const { commits, contributors, branches, tree, owner, repoName } = get();
+        const { commits, contributors, branches, tree } = get();
+        const loadId = repoLoadId;
         set({ aiSummaryLoading: true, aiSummaryError: null, aiSummary: null });
 
         // Gather file type stats
@@ -288,9 +323,12 @@ const useStore = create((set, get) => ({
         };
 
         try {
-            const res = await axios.post(`${API_BASE}/repo/ai-summary`, stats);
+            const { owner, repoName } = get();
+            const res = await axios.post(`${API_BASE}/repo/ai-summary`, { ...stats, owner, repo: repoName });
+            if (loadId !== repoLoadId) return;
             set({ aiSummary: res.data.summary, aiSummaryLoading: false });
         } catch (err) {
+            if (loadId !== repoLoadId) return;
             set({
                 aiSummaryError: err.response?.data?.error || err.message,
                 aiSummaryLoading: false
@@ -322,7 +360,9 @@ const useStore = create((set, get) => ({
             set({ aiChatMessages: newMessages, aiChatLoading: true });
 
             try {
+                const { owner, repoName } = get();
                 const res = await axios.post(`${API_BASE}/repo/ai-chat`, {
+                    owner, repo: repoName,
                     filePath: path,
                     fileContent: currentFileContent.content,
                     messages: [initMessage]
@@ -345,7 +385,7 @@ const useStore = create((set, get) => ({
 
         const path = selectedFile.path;
         const userMsg = { role: 'user', content: message.trim() };
-        const existingMsgs = aiChatMessages[path] || [];
+        const existingMsgs = (aiChatMessages[path] || []).slice(-19);
         const updatedMsgs = [...existingMsgs, userMsg];
         set({
             aiChatMessages: { ...aiChatMessages, [path]: updatedMsgs },
@@ -354,7 +394,9 @@ const useStore = create((set, get) => ({
         });
 
         try {
+            const { owner, repoName } = get();
             const res = await axios.post(`${API_BASE}/repo/ai-chat`, {
+                owner, repo: repoName,
                 filePath: path,
                 fileContent: currentFileContent.content,
                 messages: updatedMsgs

@@ -6,3 +6,7 @@ test_ingestion.py
 test_file_filter.py
 test_sarif.py
 test_anchor.py
+demo_security.py
+test_sarif_parser.py
+test_finding_context.py
+test_finding_enrichment.py

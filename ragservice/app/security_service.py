@@ -35,6 +35,104 @@ def _finding_query(finding: dict[str, Any]) -> str:
     return "\n".join(part for part in parts if part.strip())
 
 
+def _build_direct_evidence(
+    finding: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Build evidence from the finding itself, before vector retrieval."""
+    evidence: list[dict[str, Any]] = []
+
+    def add_evidence(
+        evidence_type: str,
+        source: str,
+        *,
+        file_path: str | None = None,
+        start_line: int | None = None,
+        end_line: int | None = None,
+        start_column: int | None = None,
+        end_column: int | None = None,
+        code: str | None = None,
+        message: str | None = None,
+        **extra: Any,
+    ) -> None:
+        evidence.append({
+            "id": f"E{len(evidence) + 1}",
+            "evidence_type": evidence_type,
+            "source": source,
+            "file_path": file_path,
+            "start_line": start_line,
+            "end_line": end_line,
+            "start_column": start_column,
+            "end_column": end_column,
+            "code": code,
+            "message": message,
+            **extra,
+        })
+
+    location = finding.get("primary_location") or {}
+
+    # Preserve the exact source region that CodeQL highlighted.
+    snippet = finding.get("source_snippet")
+    if isinstance(snippet, str) and snippet:
+        add_evidence(
+            "exact_source_region",
+            "SARIF primary location",
+            file_path=finding.get("file_path"),
+            start_line=location.get("start_line") or finding.get("start_line"),
+            end_line=location.get("end_line") or finding.get("end_line"),
+            start_column=location.get("start_column"),
+            end_column=location.get("end_column"),
+            code=snippet,
+            precision=finding.get("source_snippet_precision"),
+        )
+
+    # Preserve the larger syntax construct containing the finding.
+    context = finding.get("ast_context") or {}
+    construct = context.get("construct") or {}
+
+    if construct.get("code"):
+        add_evidence(
+            "ast_construct",
+            "Tree-sitter AST",
+            file_path=finding.get("file_path"),
+            start_line=construct.get("start_line"),
+            end_line=construct.get("end_line"),
+            code=construct["code"],
+            construct_type=construct.get("type"),
+        )
+
+    # Include the enclosing function or class where one exists.
+    symbol = context.get("symbol") or {}
+
+    if symbol.get("code"):
+        add_evidence(
+            "enclosing_symbol",
+            "Tree-sitter AST",
+            file_path=finding.get("file_path"),
+            start_line=symbol.get("start_line"),
+            end_line=symbol.get("end_line"),
+            code=symbol["code"],
+            symbol_name=symbol.get("name"),
+            symbol_type=symbol.get("type"),
+        )
+
+    # Preserve the order of CodeQL's reported flow steps.
+    for step in finding.get("code_flow_steps") or []:
+        add_evidence(
+            "codeql_flow_step",
+            "SARIF code flow",
+            file_path=step.get("file_path"),
+            start_line=step.get("start_line"),
+            end_line=step.get("end_line"),
+            start_column=step.get("start_column"),
+            end_column=step.get("end_column"),
+            message=step.get("message"),
+            flow_index=step.get("flow_index"),
+            thread_flow_index=step.get("thread_flow_index"),
+            step_index=step.get("step_index"),
+        )
+
+    return evidence
+
 def analyze_security_finding(
     *,
     repository_id: str,
@@ -60,21 +158,27 @@ def analyze_security_finding(
         top_k=top_k,
     )
 
-    evidence = []
-    for index, row in enumerate(evidence_rows, start=1):
-        evidence.append(
-            {
-                "id": f"E{index}",
-                "file_path": row["file_path"],
-                "language": row["language"],
-                "symbol_type": row.get("symbol_type"),
-                "symbol_name": row.get("symbol_name"),
-                "start_line": row["start_line"],
-                "end_line": row["end_line"],
-                "similarity": round(float(row["similarity"]), 4),
-                "code": str(row["code"])[:5500],
-            }
-        )
+
+    evidence = _build_direct_evidence(finding)
+    direct_evidence_count = len(evidence)
+
+    for index, row in enumerate(
+        evidence_rows,
+        start=len(evidence) + 1,
+    ):
+        evidence.append({
+            "id": f"E{index}",
+            "evidence_type": "retrieved_code_chunk",
+            "source": "pgvector cosine retrieval",
+            "file_path": row["file_path"],
+            "language": row["language"],
+            "symbol_type": row.get("symbol_type"),
+            "symbol_name": row.get("symbol_name"),
+            "start_line": row["start_line"],
+            "end_line": row["end_line"],
+            "similarity": round(float(row["similarity"]), 4),
+            "code": str(row["code"])[:5500],
+        })
 
     system_prompt = """You are GitCity's repository security analyst.
 Analyze one static-analysis finding using only the supplied finding and retrieved
@@ -91,6 +195,12 @@ Security and evidence rules:
 - Do not claim that code was executed, tested, or verified.
 - Recommend concrete remediation only when the evidence supports it.
 - Do not claim a vulnerability is exploitable solely because a rule fired.
+- Direct source-region evidence, AST context, CodeQL flow steps, and
+  vector-retrieved chunks have different provenance.
+- A CodeQL flow-step message is not necessarily the source code at that
+  location; do not present it as a source excerpt.
+- Give priority to the exact flagged region and relevant surrounding
+  source when explaining what the finding identifies.
 
 Return a useful Markdown report with these headings:
 1. Assessment (likely true positive / needs review / likely false positive)
@@ -131,4 +241,6 @@ CodeQL. Be concise, specific, and honest about uncertainty."""
         "evidence_count": len(evidence),
         "evidence": evidence,
         "analysis": analysis,
+        "direct_evidence_count": direct_evidence_count,
+        "retrieved_evidence_count": len(evidence_rows),
     }

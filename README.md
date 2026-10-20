@@ -29,10 +29,12 @@ Explore your codebase visually and travel through commit history like a time mac
    npm install
    npm run dev
    ```
+   Local development uses `http://localhost:3001` for the backend. Set
+   `VITE_API_BASE` in `frontend/.env` only if the backend runs at another URL.
 
 3. **Usage**:
    - Open the web app on `http://localhost:5173/`
-   - In the top bar, enter an absolute path to a local Git repository (e.g. `C:/Users/chait/OneDrive/Desktop/GITCITY`)
+   - In the top bar, enter a GitHub repository URL (e.g. `https://github.com/facebook/react`)
    - Click "Load Repo"
    - Use WASD or Mouse to navigate the 3D City!
    - Use the timeline slider at the bottom to travel through time.

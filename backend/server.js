@@ -15,6 +15,13 @@ const limiter = rateLimit({
     standardHeaders: true,
     legacyHeaders: false,
 });
+const aiLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    max: 10,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'AI request limit reached. Try again in an hour.' }
+});
 
 // ─── CORS: restrict to known origins ───
 const allowedOrigins = process.env.NODE_ENV === 'production'
@@ -39,16 +46,26 @@ app.use(cors({
 }));
 
 app.use(limiter);
-app.use(express.json());
+app.use(express.json({ limit: '512kb' }));
 
-// In-memory store for the currently loaded repo
-let currentRepo = { owner: null, repo: null };
+// Include repository identity with each request so users cannot overwrite
+// one another's selected repository on this shared server.
+app.use('/repo', (req, res, next) => {
+    if (req.path === '/load') return next();
+    const { owner, repo } = req.method === 'GET' ? req.query : req.body || {};
+    if (typeof owner !== 'string' || typeof repo !== 'string' ||
+        !/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repo)) {
+        return res.status(400).json({ error: 'A valid owner and repo are required.' });
+    }
+    req.repoContext = { owner, repo };
+    next();
+});
 
 const GITHUB_API = 'https://api.github.com';
 
 // ─── In-memory cache with 5-minute TTL and size limit ───────────────────────────────────────
 const cache = {};
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 15 * 60 * 1000; // 15 minutes
 const MAX_CACHE_ENTRIES = 1000; // Limit total cache entries to prevent memory growth
 
 function getCacheKey(owner, repo) {
@@ -98,7 +115,7 @@ const depCache = {};
 
 function getDepCache(owner, repo, filePath) {
     const key = getCacheKey(owner, repo);
-    return depCache[key]?.[filePath];
+    return depCache[key]?.files?.[filePath];
 }
 
 function setDepCache(owner, repo, filePath, deps) {
@@ -134,16 +151,48 @@ const ghHeaders = () => {
     return headers;
 };
 
+const getGitHubErrorMessage = (error) => {
+    const response = error.response;
+    const message = response?.data?.message || error.message;
+    const remaining = Number(response?.headers?.['x-ratelimit-remaining']);
+    const isRateLimit = response?.status === 429 ||
+        (response?.status === 403 && (remaining === 0 || /rate limit/i.test(message || '')));
+
+    if (!isRateLimit) return message;
+
+    const retryAfter = Number(response?.headers?.['retry-after']);
+    const resetAt = Number(response?.headers?.['x-ratelimit-reset']);
+    const retryMessage = retryAfter > 0
+        ? ` Retry after ${retryAfter} seconds.`
+        : resetAt > 0
+            ? ` Try again after ${new Date(resetAt * 1000).toLocaleTimeString()}.`
+            : ' Wait a minute before trying again.';
+    const tokenMessage = process.env.GITHUB_TOKEN
+        ? ''
+        : ' Add GITHUB_TOKEN to backend/.env to use the higher authenticated limit.';
+
+    return `GitHub API rate limit reached.${retryMessage}${tokenMessage}`;
+};
+
 // Helper: extract owner/repo from GitHub URL
 const parseGitHubUrl = (url) => {
     // Supports: https://github.com/owner/repo, https://github.com/owner/repo.git
-    const match = url.match(/github\.com\/([^\/]+)\/([^\/\?#]+)/);
-    if (!match) throw new Error('Invalid GitHub URL. Expected format: https://github.com/owner/repo');
-    let repoName = match[2];
+    let parsed;
+    try { parsed = new URL(url); } catch { throw new Error('Invalid GitHub URL. Expected format: https://github.com/owner/repo'); }
+    if (parsed.protocol !== 'https:' || parsed.hostname !== 'github.com') {
+        throw new Error('Invalid GitHub URL. Expected format: https://github.com/owner/repo');
+    }
+    const parts = parsed.pathname.split('/').filter(Boolean);
+    if (parts.length !== 2) throw new Error('Invalid GitHub URL. Expected format: https://github.com/owner/repo');
+    const owner = parts[0];
+    let repoName = parts[1];
     if (repoName.endsWith('.git')) {
         repoName = repoName.slice(0, -4);
     }
-    return { owner: match[1], repo: repoName };
+    if (!/^[A-Za-z0-9_.-]{1,100}$/.test(owner) || !/^[A-Za-z0-9_.-]{1,100}$/.test(repoName)) {
+        throw new Error('Invalid GitHub owner or repository name.');
+    }
+    return { owner, repo: repoName };
 };
 
 // Helper: resolve & cache default branch SHA (reused by /repo/tree and prefetched at load)
@@ -165,32 +214,12 @@ async function resolveDefaultBranchSha(owner, repo) {
 
 // POST /repo/load
 // Body: { "url": "https://github.com/user/repo" }
-// Prefetches default branch info and caches it for later use
 app.post('/repo/load', async (req, res) => {
     try {
         const { url } = req.body;
         if (!url) throw new Error('URL is required');
 
         const { owner, repo } = parseGitHubUrl(url);
-
-        // If switching to a different repo, clear old cache
-        if (currentRepo.owner !== owner || currentRepo.repo !== repo) {
-            if (currentRepo.owner) {
-                clearCacheForRepo(currentRepo.owner, currentRepo.repo);
-                clearDepCacheForRepo(currentRepo.owner, currentRepo.repo);
-            }
-        }
-
-        currentRepo = { owner, repo };
-
-        // Prefetch & cache default branch SHA so /repo/tree doesn't need extra calls
-        try {
-            await resolveDefaultBranchSha(owner, repo);
-            console.log(`[PREFETCH] Default branch SHA cached for ${owner}/${repo}`);
-        } catch (prefetchErr) {
-            // Non-fatal: the tree endpoint will fetch it on demand
-            console.warn(`[PREFETCH] Could not prefetch branch info: ${prefetchErr.message}`);
-        }
 
         res.json({ success: true, owner, repo, message: `Repository ${owner}/${repo} loaded.` });
     } catch (error) {
@@ -202,7 +231,7 @@ app.post('/repo/load', async (req, res) => {
 // Returns the full recursive file tree for the default branch
 app.get('/repo/tree', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded. Call POST /repo/load first.');
 
         const sha = req.query.sha || 'HEAD';
@@ -238,7 +267,7 @@ app.get('/repo/tree', async (req, res) => {
 
         res.json(files);
     } catch (error) {
-        const msg = error.response?.data?.message || error.message;
+        const msg = getGitHubErrorMessage(error);
         res.status(error.response?.status || 400).json({ error: msg });
     }
 });
@@ -247,7 +276,7 @@ app.get('/repo/tree', async (req, res) => {
 // Returns the recent commits (paginated; default 100)
 app.get('/repo/commits', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded. Call POST /repo/load first.');
 
         const page = req.query.page || 1;
@@ -267,7 +296,8 @@ app.get('/repo/commits', async (req, res) => {
             message: c.commit.message,
             date: c.commit.author.date,
             author_name: c.commit.author.name,
-            author_email: c.commit.author.email
+            author_email: c.commit.author.email,
+            parents: (c.parents || []).map(parent => parent.sha)
         }));
 
         setCache(owner, repo, cacheField, commits);
@@ -275,7 +305,7 @@ app.get('/repo/commits', async (req, res) => {
 
         res.json(commits);
     } catch (error) {
-        const msg = error.response?.data?.message || error.message;
+        const msg = getGitHubErrorMessage(error);
         res.status(error.response?.status || 400).json({ error: msg });
     }
 });
@@ -284,27 +314,29 @@ app.get('/repo/commits', async (req, res) => {
 // Computes real commit counts and top contributor per file by fetching details for the last 20 commits
 app.get('/repo/file-stats', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded.');
 
-        const cacheField = 'file-stats:20';
+        const cacheField = 'file-stats:5';
         const cached = getCache(owner, repo, cacheField);
         if (cached) return res.json(cached);
 
-        // Fetch last 20 commits
+        // Keep this optional endpoint lightweight; loading the main city does not call it.
         const commitsRes = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/commits`, {
-            params: { per_page: 20 },
+            params: { per_page: 5 },
             headers: ghHeaders()
         });
 
-        // Fetch detailed files for those 20 commits concurrently
-        const commitDetails = await Promise.all(
-            commitsRes.data.map(c =>
-                axios.get(`${GITHUB_API}/repos/${owner}/${repo}/commits/${c.sha}`, { headers: ghHeaders() })
-                    .then(res => res.data)
-                    .catch(() => null)
-            )
-        );
+        // Fetch sequentially to avoid burst traffic and secondary rate limits.
+        const commitDetails = [];
+        for (const commit of commitsRes.data) {
+            try {
+                const detail = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/commits/${commit.sha}`, { headers: ghHeaders() });
+                commitDetails.push(detail.data);
+            } catch {
+                commitDetails.push(null);
+            }
+        }
 
         const fileStats = {};
 
@@ -339,7 +371,7 @@ app.get('/repo/file-stats', async (req, res) => {
 
         res.json(result);
     } catch (error) {
-        const msg = error.response?.data?.message || error.message;
+        const msg = getGitHubErrorMessage(error);
         res.status(error.response?.status || 400).json({ error: msg });
     }
 });
@@ -347,7 +379,7 @@ app.get('/repo/file-stats', async (req, res) => {
 // GET /repo/contributors
 app.get('/repo/contributors', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded. Call POST /repo/load first.');
 
         const cached = getCache(owner, repo, 'contributors');
@@ -369,7 +401,7 @@ app.get('/repo/contributors', async (req, res) => {
 
         res.json(contributors);
     } catch (error) {
-        const msg = error.response?.data?.message || error.message;
+        const msg = getGitHubErrorMessage(error);
         res.status(error.response?.status || 400).json({ error: msg });
     }
 });
@@ -377,7 +409,7 @@ app.get('/repo/contributors', async (req, res) => {
 // GET /repo/branches
 app.get('/repo/branches', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded. Call POST /repo/load first.');
 
         const cached = getCache(owner, repo, 'branches');
@@ -399,7 +431,7 @@ app.get('/repo/branches', async (req, res) => {
 
         res.json(branches);
     } catch (error) {
-        const msg = error.response?.data?.message || error.message;
+        const msg = getGitHubErrorMessage(error);
         res.status(error.response?.status || 400).json({ error: msg });
     }
 });
@@ -407,7 +439,7 @@ app.get('/repo/branches', async (req, res) => {
 // GET /repo/file-history?path=src/index.js
 app.get('/repo/file-history', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded. Call POST /repo/load first.');
 
         const filePath = req.query.path;
@@ -436,7 +468,7 @@ app.get('/repo/file-history', async (req, res) => {
 
         res.json(commits);
     } catch (error) {
-        const msg = error.response?.data?.message || error.message;
+        const msg = getGitHubErrorMessage(error);
         res.status(error.response?.status || 400).json({ error: msg });
     }
 });
@@ -445,7 +477,7 @@ app.get('/repo/file-history', async (req, res) => {
 // Fetches the raw content of a specific file with syntax highlighting support.
 app.get('/repo/file', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded. Call POST /repo/load first.');
 
         const filePath = req.query.path;
@@ -507,7 +539,7 @@ app.get('/repo/file', async (req, res) => {
         if (error.code === 'ECONNABORTED') {
             return res.status(504).json({ error: 'Request to GitHub API timed out (5s limit).' });
         }
-        const msg = error.response?.data?.message || error.message;
+        const msg = getGitHubErrorMessage(error);
         res.status(error.response?.status || 500).json({ error: msg });
     }
 });
@@ -540,7 +572,7 @@ function normalizePosixPath(base, relative) {
 // Returns local dependencies for a given JS/TS file inside the repo
 app.get('/repo/dependencies', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded.');
 
         const filePath = req.query.path;
@@ -647,7 +679,7 @@ app.get('/repo/dependencies', async (req, res) => {
     } catch (error) {
         console.error(`[DEP PARSE ERROR] ${error.message}`);
         // Default to empty array on error (e.g., 404 large file, etc)
-        setDepCache(currentRepo.owner, currentRepo.repo, req.query.path, []);
+        setDepCache(req.repoContext.owner, req.repoContext.repo, req.query.path, []);
         res.json([]);
     }
 });
@@ -656,7 +688,7 @@ app.get('/repo/dependencies', async (req, res) => {
 // Returns commits with parent SHA references for graph visualization
 app.get('/repo/commit-graph', async (req, res) => {
     try {
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded. Call POST /repo/load first.');
 
         const per_page = Math.min(Number(req.query.per_page) || 100, 200);
@@ -664,6 +696,20 @@ app.get('/repo/commit-graph', async (req, res) => {
         const cacheField = `commit-graph:${per_page}`;
         const cached = getCache(owner, repo, cacheField);
         if (cached) return res.json(cached);
+
+        const cachedCommits = getCache(owner, repo, `commits:1:${per_page}`);
+        if (cachedCommits) {
+            const graphData = cachedCommits.map(commit => ({
+                hash: commit.hash,
+                message: commit.message,
+                date: commit.date,
+                author_name: commit.author_name,
+                author_email: commit.author_email,
+                parents: commit.parents || []
+            }));
+            setCache(owner, repo, cacheField, graphData);
+            return res.json(graphData);
+        }
 
         const response = await axios.get(`${GITHUB_API}/repos/${owner}/${repo}/commits`, {
             params: { per_page },
@@ -684,24 +730,28 @@ app.get('/repo/commit-graph', async (req, res) => {
 
         res.json(graphData);
     } catch (error) {
-        const msg = error.response?.data?.message || error.message;
+        const msg = getGitHubErrorMessage(error);
         res.status(error.response?.status || 400).json({ error: msg });
     }
 });
 
 // POST /repo/ai-summary
 // Proxies to OpenRouter to generate a narrative summary of the repository
-app.post('/repo/ai-summary', async (req, res) => {
+app.post('/repo/ai-summary', aiLimiter, async (req, res) => {
     try {
         const apiKey = process.env.OPENROUTER_API_KEY;
         if (!apiKey) {
             return res.status(400).json({ error: 'OpenRouter API key not configured. Add OPENROUTER_API_KEY to backend/.env' });
         }
 
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded.');
 
         const stats = req.body;
+        const summaryFields = ['topContributors', 'latestCommit', 'oldestCommit', 'fileTypes'];
+        for (const field of summaryFields) {
+            if (typeof stats[field] === 'string') stats[field] = stats[field].slice(0, 500);
+        }
 
         const prompt = `You are a senior developer analyzing a GitHub repository. Give a concise, insightful summary (3-5 paragraphs) of this repository based on the following statistics:
 
@@ -751,14 +801,14 @@ Keep it conversational and insightful. Use emoji sparingly for visual appeal.`;
 // POST /repo/ai-chat
 // Handles conversational AI chat about a specific file's code
 // Body: { filePath: string, fileContent: string, messages: [{role, content}] }
-app.post('/repo/ai-chat', async (req, res) => {
+app.post('/repo/ai-chat', aiLimiter, async (req, res) => {
     try {
         const apiKey = process.env.OPENROUTER_API_KEY;
         if (!apiKey) {
             return res.status(400).json({ error: 'OpenRouter API key not configured. Add OPENROUTER_API_KEY to backend/.env' });
         }
 
-        const { owner, repo } = currentRepo;
+        const { owner, repo } = req.repoContext;
         if (!owner) throw new Error('No repository loaded.');
 
         const { filePath, fileContent, messages } = req.body;
@@ -767,6 +817,12 @@ app.post('/repo/ai-chat', async (req, res) => {
         }
         if (!messages || !Array.isArray(messages) || messages.length === 0) {
             throw new Error('messages array is required and must not be empty.');
+        }
+        if (typeof fileContent !== 'string' || fileContent.length > 100000 ||
+            typeof filePath !== 'string' || filePath.length > 500 || messages.length > 20 ||
+            messages.some(m => !m || !['user', 'assistant'].includes(m.role) ||
+                typeof m.content !== 'string' || m.content.length > 4000)) {
+            return res.status(400).json({ error: 'AI chat input is too large or invalid.' });
         }
 
         // Build system prompt with file context

@@ -1,7 +1,7 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import useStore from './store';
 import * as THREE from 'three';
-import { useSpring, animated } from '@react-spring/three';
+import { useSpring, animated as Animated } from '@react-spring/three';
 import { getFileType } from './utils/getFileType';
 import LANGUAGE_COLORS from './utils/languageColors';
 import CityTooltip from './components/CityTooltip';
@@ -142,7 +142,8 @@ function computeCityLayout(tree) {
     let cityWidth = 0;
     let cityDepth = 0;
 
-    blocks.forEach(block => {
+    blocks.forEach((block, index) => {
+        block.rowIndex = Math.floor(index / CITY_MAX_COLS);
         block.worldX = gridX;
         block.worldZ = gridZ;
 
@@ -172,13 +173,57 @@ function computeCityLayout(tree) {
         block.worldZ += offsetZ;
     });
 
-    return { blocks, maxSize, cityWidth, cityDepth };
+    const roads = [];
+    const rows = Array.from({ length: Math.ceil(blocks.length / CITY_MAX_COLS) }, (_, rowIndex) =>
+        blocks.filter(block => block.rowIndex === rowIndex)
+    );
+
+    rows.forEach((row, rowIndex) => {
+        const rowDepth = Math.max(...row.map(block => block.blockDepth));
+        row.slice(0, -1).forEach((block, index) => {
+            const next = row[index + 1];
+            const startX = block.worldX + block.blockWidth;
+            const width = next.worldX - startX;
+            if (width > 0) {
+                roads.push({
+                    x: startX + width / 2,
+                    z: block.worldZ + rowDepth / 2,
+                    width,
+                    depth: rowDepth
+                });
+            }
+        });
+
+        const nextRow = rows[rowIndex + 1];
+        if (nextRow) {
+            const nextRowZ = nextRow[0].worldZ;
+            const roadStartZ = row[0].worldZ + rowDepth;
+            const depth = nextRowZ - roadStartZ;
+            const sharedLeft = Math.max(
+                Math.min(...row.map(block => block.worldX)),
+                Math.min(...nextRow.map(block => block.worldX))
+            );
+            const sharedRight = Math.min(
+                Math.max(...row.map(block => block.worldX + block.blockWidth)),
+                Math.max(...nextRow.map(block => block.worldX + block.blockWidth))
+            );
+            if (depth > 0 && sharedRight > sharedLeft) {
+                roads.push({
+                    x: sharedLeft + (sharedRight - sharedLeft) / 2,
+                    z: roadStartZ + depth / 2,
+                    width: sharedRight - sharedLeft,
+                    depth
+                });
+            }
+        }
+    });
+
+    return { blocks, roads, maxSize, cityWidth, cityDepth };
 }
 
 // ─── Individual Building Component ───────────────────────────────────────────
 
-const Building = ({ data, position, height, width, depth, color, isSelected, onClick, colorMode, maxCommits, folderIndex, fileIndex, commitCount, topContributor, isMostEdited, onHover, onUnhover }) => {
-    const meshRef = useRef();
+const Building = ({ data, position, height, width, depth, color, isSelected, onClick, colorMode, maxCommits, folderIndex, fileIndex, commitCount, isMostEdited, onHover, onUnhover }) => {
 
     const buildingColor = colorMode === 'heatmap'
         ? getHeatColor(commitCount, maxCommits)
@@ -204,7 +249,7 @@ const Building = ({ data, position, height, width, depth, color, isSelected, onC
     });
 
     return (
-        <animated.group
+        <Animated.group
             position-x={position[0]}
             position-y={yPos}
             position-z={position[2]}
@@ -268,13 +313,13 @@ const Building = ({ data, position, height, width, depth, color, isSelected, onC
                     commitCount={commitCount}
                 />
             )}
-        </animated.group>
+        </Animated.group>
     );
 };
 
 // ─── Window Details ──────────────────────────────────────────────────────────
 
-const WindowDetails = ({ width, depth, height, floors, floorHeight, commitCount }) => {
+const WindowDetails = ({ width, depth, floors, floorHeight, commitCount }) => {
     const windows = [];
     const windowSize = 0.2;
     const windowDepth = 0.05;
@@ -313,7 +358,7 @@ const WindowDetails = ({ width, depth, height, floors, floorHeight, commitCount 
 
 // ─── Folder Block Platform ───────────────────────────────────────────────────
 
-const BlockPlatform = ({ position, width, depth, dirIndex, dirName }) => {
+const BlockPlatform = ({ position, width, depth, dirIndex }) => {
     const hue = FOLDER_HUES[dirIndex % FOLDER_HUES.length];
     const platformColor = new THREE.Color();
     platformColor.setHSL(hue / 360, 0.3, 0.15);
@@ -357,19 +402,72 @@ const BlockPlatform = ({ position, width, depth, dirIndex, dirName }) => {
     );
 };
 
-// ─── Street Lines ────────────────────────────────────────────────────────────
-
-const StreetLine = ({ x1, z1, x2, z2 }) => {
-    const length = Math.sqrt((x2 - x1) ** 2 + (z2 - z1) ** 2);
-    const midX = (x1 + x2) / 2;
-    const midZ = (z1 + z2) / 2;
-    const angle = Math.atan2(z2 - z1, x2 - x1);
+const BlockAlleys = ({ block }) => {
+    const laneWidth = 0.38;
+    const verticalAlleys = Array.from({ length: block.cols - 1 }, (_, col) =>
+        BLOCK_PADDING + col * (BUILDING_WIDTH + BUILDING_GAP) + (BUILDING_WIDTH + BUILDING_GAP) / 2
+    );
+    const horizontalAlleys = Array.from({ length: block.rows - 1 }, (_, row) =>
+        BLOCK_PADDING + row * (BUILDING_DEPTH + BUILDING_GAP) + (BUILDING_DEPTH + BUILDING_GAP) / 2
+    );
 
     return (
-        <mesh position={[midX, 0.02, midZ]} rotation={[-Math.PI / 2, 0, -angle]}>
-            <planeGeometry args={[length, 0.15]} />
-            <meshStandardMaterial color="#334155" roughness={1} />
-        </mesh>
+        <group>
+            {verticalAlleys.map((x, index) => (
+                <mesh key={`vertical-${index}`} position={[x, 0.21, block.blockDepth / 2]}>
+                    <boxGeometry args={[laneWidth, 0.02, block.blockDepth - BLOCK_PADDING * 2]} />
+                    <meshStandardMaterial color="#202a38" roughness={0.96} metalness={0.02} />
+                </mesh>
+            ))}
+            {horizontalAlleys.map((z, index) => (
+                <mesh key={`horizontal-${index}`} position={[block.blockWidth / 2, 0.21, z]}>
+                    <boxGeometry args={[block.blockWidth - BLOCK_PADDING * 2, 0.02, laneWidth]} />
+                    <meshStandardMaterial color="#202a38" roughness={0.96} metalness={0.02} />
+                </mesh>
+            ))}
+        </group>
+    );
+};
+
+const CityRoad = ({ road }) => {
+    const horizontal = road.width >= road.depth;
+    const roadLength = horizontal ? road.width : road.depth;
+    const crossSpan = horizontal ? road.depth : road.width;
+    const asphaltSpan = Math.max(0.5, crossSpan - 1.2);
+    const sidewalkWidth = Math.max(0, (crossSpan - asphaltSpan) / 2);
+    const dashCount = Math.max(1, Math.floor(roadLength / 5));
+    const dashLength = Math.min(1.8, roadLength / (dashCount * 2));
+    const sidewalkOffset = asphaltSpan / 2 + sidewalkWidth / 2;
+
+    return (
+        <group position={[road.x, 0, road.z]}>
+            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.025, 0]} receiveShadow>
+                <planeGeometry args={horizontal ? [road.width, asphaltSpan] : [asphaltSpan, road.depth]} />
+                <meshStandardMaterial color="#202a38" roughness={0.96} metalness={0.02} />
+            </mesh>
+            {sidewalkWidth > 0 && [-1, 1].map(side => (
+                <mesh
+                    key={`sidewalk-${side}`}
+                    rotation={[-Math.PI / 2, 0, 0]}
+                    position={horizontal ? [0, 0.026, side * sidewalkOffset] : [side * sidewalkOffset, 0.026, 0]}
+                >
+                    <planeGeometry args={horizontal ? [road.width, sidewalkWidth] : [sidewalkWidth, road.depth]} />
+                    <meshStandardMaterial color="#46515d" roughness={0.92} />
+                </mesh>
+            ))}
+            {Array.from({ length: dashCount }, (_, index) => {
+                const along = (index + 0.5) * roadLength / dashCount - roadLength / 2;
+                return (
+                    <mesh
+                        key={index}
+                        position={horizontal ? [along, 0.045, 0] : [0, 0.045, along]}
+                    >
+                        <boxGeometry args={horizontal ? [dashLength, 0.02, 0.12] : [0.12, 0.02, dashLength]} />
+                        <meshStandardMaterial color="#d6c99a" roughness={0.8} />
+                    </mesh>
+                );
+            })}
+        </group>
     );
 };
 
@@ -431,6 +529,23 @@ const StreetLamp = ({ position }) => (
     </group>
 );
 
+const CityTree = ({ position }) => (
+    <group position={position}>
+        <mesh position={[0, 0.85, 0]} castShadow>
+            <cylinderGeometry args={[0.14, 0.22, 1.7, 7]} />
+            <meshStandardMaterial color="#76533a" roughness={0.9} />
+        </mesh>
+        <mesh position={[0, 2.1, 0]} castShadow>
+            <coneGeometry args={[1.05, 2.2, 7]} />
+            <meshStandardMaterial color="#34734c" roughness={0.86} />
+        </mesh>
+        <mesh position={[0, 3.05, 0]} castShadow>
+            <coneGeometry args={[0.72, 1.7, 7]} />
+            <meshStandardMaterial color="#4d925d" roughness={0.86} />
+        </mesh>
+    </group>
+);
+
 // ─── Main Scene ──────────────────────────────────────────────────────────────
 
 const Scene = ({ colorMode = 'filetype' }) => {
@@ -455,24 +570,40 @@ const Scene = ({ colorMode = 'filetype' }) => {
         return { maxCommits, mostEditedPath };
     }, [fileStats]);
 
-    const { blocks, maxSize, cityWidth, cityDepth, lamps } = useMemo(() => {
+    const { blocks, roads, cityWidth, cityDepth, lamps, trees } = useMemo(() => {
         const result = computeCityLayout(tree);
-
-        // Place street lamps at block corners (limited count for performance)
         const lampPositions = [];
-        const maxLamps = 20;
-        result.blocks.forEach((block, i) => {
-            if (lampPositions.length >= maxLamps) return;
-            if (i % 2 === 0) {
-                lampPositions.push([
-                    block.worldX - 1.5,
-                    0,
-                    block.worldZ + block.blockDepth / 2
-                ]);
+        const treePositions = [];
+        result.roads.forEach(road => {
+            const horizontal = road.width >= road.depth;
+            const length = horizontal ? road.width : road.depth;
+            const crossSpan = horizontal ? road.depth : road.width;
+            const asphaltSpan = Math.max(0.5, crossSpan - 1.2);
+            const sidewalkWidth = Math.max(0, (crossSpan - asphaltSpan) / 2);
+            const sidewalkOffset = asphaltSpan / 2 + sidewalkWidth / 2;
+            const lampCount = Math.max(1, Math.floor(length / 18));
+
+            for (let i = 0; i < lampCount && lampPositions.length < 36; i++) {
+                const along = (i + 0.5) * length / lampCount - length / 2;
+                for (const side of [-1, 1]) {
+                    if (lampPositions.length >= 36) break;
+                    lampPositions.push(horizontal
+                        ? [road.x + along, 0, road.z + side * sidewalkOffset]
+                        : [road.x + side * sidewalkOffset, 0, road.z + along]);
+                }
+            }
+
+            const treeCount = Math.max(1, Math.floor(length / 28));
+            for (let i = 0; i < treeCount && treePositions.length < 28; i++) {
+                const along = (i + 0.5) * length / treeCount - length / 2;
+                const side = i % 2 === 0 ? -1 : 1;
+                treePositions.push(horizontal
+                    ? [road.x + along, 0, road.z + side * sidewalkOffset]
+                    : [road.x + side * sidewalkOffset, 0, road.z + along]);
             }
         });
 
-        return { ...result, lamps: lampPositions };
+        return { ...result, lamps: lampPositions, trees: treePositions };
     }, [tree]);
 
     const handleHover = (data, point) => {
@@ -493,6 +624,9 @@ const Scene = ({ colorMode = 'filetype' }) => {
 
             <CityGround size={Math.max(cityWidth, cityDepth)} />
 
+            {/* Asphalt corridors and dashed center markings between city blocks */}
+            {roads.map((road, index) => <CityRoad key={`road-${index}`} road={road} />)}
+
             {/* Dependency Bridges (Glowing cyan tubes) */}
             <DependencyBridges blocks={blocks} />
 
@@ -506,6 +640,9 @@ const Scene = ({ colorMode = 'filetype' }) => {
             {lamps.map((pos, i) => (
                 <StreetLamp key={`lamp-${i}`} position={pos} />
             ))}
+            {trees.map((pos, i) => (
+                <CityTree key={`tree-${i}`} position={pos} />
+            ))}
 
             {/* City blocks */}
             {blocks.map((block) => (
@@ -516,8 +653,8 @@ const Scene = ({ colorMode = 'filetype' }) => {
                         width={block.blockWidth}
                         depth={block.blockDepth}
                         dirIndex={block.dirIndex}
-                        dirName={block.dir}
                     />
+                    <BlockAlleys block={block} />
 
                     {/* Buildings within this block */}
                     {block.buildings.map((b) => {

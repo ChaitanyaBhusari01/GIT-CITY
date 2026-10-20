@@ -62,7 +62,9 @@ const AISummary = () => {
             { label: 'Recent Commits', value: commits.length, icon: Activity, color: 'text-emerald-400' },
             { label: 'Biggest Folder', value: biggestFolder.split('/').pop(), icon: Folder, color: 'text-amber-400', full: biggestFolder },
             { label: 'Biggest File', value: biggestFile?.split('/').pop(), icon: File, color: 'text-purple-400', full: biggestFile },
-            { label: 'Most Edited File', value: mostEdited?.split('/').pop(), icon: TrendingUp, color: 'text-red-400', full: mostEdited },
+            ...(Object.keys(fileStats || {}).length > 0 ? [
+                { label: 'Most Edited File', value: mostEdited?.split('/').pop(), icon: TrendingUp, color: 'text-red-400', full: mostEdited },
+            ] : []),
             { label: 'Top Contributor', value: topContr, icon: User, color: 'text-orange-400' },
             { label: 'Most Active Day', value: mostCommitsDay, icon: Calendar, color: 'text-cyan-400' },
         ];
@@ -71,7 +73,7 @@ const AISummary = () => {
     if (!showAISummary || commits.length === 0) return null;
 
     return (
-        <div className="absolute right-4 top-28 w-96 max-h-[60vh] bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl pointer-events-auto z-20 flex flex-col overflow-hidden custom-shadow">
+        <div className="absolute right-4 top-44 sm:top-40 lg:top-28 w-96 max-w-[calc(100vw-2rem)] max-h-[60vh] bg-slate-900/90 backdrop-blur border border-slate-700 rounded-xl pointer-events-auto z-20 flex flex-col overflow-hidden custom-shadow">
             {/* Header */}
             <div className="flex items-center justify-between p-4 border-b border-slate-700">
                 <div className="flex items-center gap-2">

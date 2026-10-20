@@ -1,14 +1,12 @@
 import { useState } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Stars, Sky } from '@react-three/drei';
+import { OrbitControls, Sky } from '@react-three/drei';
 import Scene from './Scene';
 import UI from './UI';
 import FileDetails from './components/FileDetails';
-import SearchPanel from './components/SearchPanel';
 import CommitGraph from './components/CommitGraph';
 import AISummary from './components/AISummary';
 import LanguageStats from './components/LanguageStats';
-import LanguageFilter from './components/LanguageFilter';
 import CodeViewerPanel from './components/CodeViewerPanel';
 import AIChatPanel from './components/AIChatPanel';
 import useStore from './store';
@@ -28,16 +26,6 @@ function App() {
           <AISummary />
           <LanguageStats />
 
-          {/* Search button - top center */}
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-40">
-            <SearchPanel />
-          </div>
-
-          {/* Language filter bar - below top bar */}
-          <div className="absolute top-[140px] left-4 right-[350px] z-20">
-            <LanguageFilter />
-          </div>
-
           <CodeViewerPanel />
           <AIChatPanel />
 
@@ -52,13 +40,13 @@ function App() {
               }}
             >
               {/* Ambient fill light — soft blue tint */}
-              <ambientLight intensity={0.25} color="#b0c4de" />
+              <ambientLight intensity={0.32} color="#b0c4de" />
 
               {/* Main sun light — warm directional with shadows */}
               <directionalLight
-                position={[80, 100, 60]}
-                intensity={1.2}
-                color="#fff5e6"
+                position={[-80, 100, -60]}
+                intensity={1.35}
+                color="#fff1d6"
                 castShadow
                 shadow-mapSize-width={2048}
                 shadow-mapSize-height={2048}
@@ -79,27 +67,28 @@ function App() {
               />
 
               {/* Hemisphere light for natural sky-ground color blending */}
-              <hemisphereLight
-                args={['#1e40af', '#0f172a', 0.15]}
-              />
+              <hemisphereLight args={['#5b8ec4', '#17202b', 0.3]} />
 
-              {/* Stars */}
-              <Stars radius={200} depth={80} count={4000} factor={4} saturation={0.2} fade speed={0.5} />
+              {/* A clear sunlit sky with a visible sun disk */}
+              <mesh position={[-80, 100, -60]}>
+                <sphereGeometry args={[2.2, 24, 24]} />
+                <meshBasicMaterial color="#fff1c2" toneMapped={false} />
+              </mesh>
 
               {/* Sky dome */}
               <Sky
                 distance={450000}
-                sunPosition={[80, 100, 60]}
-                inclination={0.52}
+                sunPosition={[-80, 100, -60]}
+                inclination={0.62}
                 azimuth={0.25}
-                turbidity={3}
-                rayleigh={0.5}
-                mieCoefficient={0.005}
-                mieDirectionalG={0.8}
+                turbidity={1.6}
+                rayleigh={1.5}
+                mieCoefficient={0.002}
+                mieDirectionalG={0.7}
               />
 
               {/* Fog for depth/atmosphere */}
-              <fog attach="fog" args={['#0c1222', 80, 300]} />
+              <fog attach="fog" args={['#91a8bf', 130, 420]} />
 
               <Scene colorMode={colorMode} />
 

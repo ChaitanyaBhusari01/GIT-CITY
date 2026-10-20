@@ -1,7 +1,9 @@
 import React, { useState } from 'react';
 import useStore from './store';
-import { Play, Pause, Github, Flame, Palette, GitBranch, Sparkles, BarChart3, Building2, Clock, Brain, ArrowRight, Loader2 } from 'lucide-react';
+import { Play, Pause, Github, Flame, Palette, GitBranch, Sparkles, BarChart3, Building2, Clock, Brain, ArrowRight, Loader2, Users, Filter, SlidersHorizontal, ChevronDown, Check, X } from 'lucide-react';
 import { format } from 'date-fns';
+import SearchPanel from './components/SearchPanel';
+import LanguageFilter from './components/LanguageFilter';
 
 // ─── Landing Page (shown when no repo is loaded) ─────────────────────────────
 
@@ -120,13 +122,12 @@ const LandingPage = ({ inputUrl, setInputUrl, handleLoad, loading }) => {
 
 const UI = ({ colorMode, setColorMode }) => {
     const {
-        repoUrl,
         setRepoUrl,
-        fetchRepoData,
         loading,
         error,
         commits,
         currentCommitIndex,
+        previewCommitIndex,
         setCommitIndex,
         contributors,
         branches,
@@ -137,11 +138,43 @@ const UI = ({ colorMode, setColorMode }) => {
         showAISummary,
         toggleAISummary,
         showLanguageStats,
-        toggleLanguageStats
+        toggleLanguageStats,
+        closeCodeViewer
     } = useStore();
 
     const [inputUrl, setInputUrl] = useState('');
     const [isPlaying, setIsPlaying] = useState(false);
+    const [showContributors, setShowContributors] = useState(false);
+    const [showLanguageFilter, setShowLanguageFilter] = useState(false);
+    const [showTools, setShowTools] = useState(false);
+    const toolsPopoverRef = React.useRef(null);
+
+    const closeOtherPanels = (except) => {
+        if (except !== 'graph' && showCommitGraph) toggleCommitGraph();
+        if (except !== 'stats' && showLanguageStats) toggleLanguageStats();
+        if (except !== 'ai' && showAISummary) toggleAISummary();
+        if (except !== 'contributors') setShowContributors(false);
+        if (except !== 'filter') setShowLanguageFilter(false);
+    };
+
+    React.useEffect(() => {
+        if (!showTools && !showContributors && !showLanguageFilter) return undefined;
+
+        const closePopover = (event) => {
+            if (event.type === 'keydown' && event.key !== 'Escape') return;
+            if (event.type === 'pointerdown' && toolsPopoverRef.current?.contains(event.target)) return;
+            setShowTools(false);
+            setShowContributors(false);
+            setShowLanguageFilter(false);
+        };
+
+        document.addEventListener('pointerdown', closePopover);
+        document.addEventListener('keydown', closePopover);
+        return () => {
+            document.removeEventListener('pointerdown', closePopover);
+            document.removeEventListener('keydown', closePopover);
+        };
+    }, [showTools, showContributors, showLanguageFilter]);
 
     // Auto-play interval
     React.useEffect(() => {
@@ -152,12 +185,18 @@ const UI = ({ colorMode, setColorMode }) => {
                 if (currentCommitIndex >= commits.length - 1) {
                     setIsPlaying(false);
                 } else {
-                    setCommitIndex(currentCommitIndex + 1);
+                    const nextIndex = currentCommitIndex + 1;
+                    const treeUpdateInterval = Math.max(1, Math.ceil(commits.length / 8));
+                    if (nextIndex === commits.length - 1 || nextIndex % treeUpdateInterval === 0) {
+                        setCommitIndex(nextIndex);
+                    } else {
+                        previewCommitIndex(nextIndex);
+                    }
                 }
             }, 1000);
         }
         return () => clearInterval(interval);
-    }, [isPlaying, commits.length, setCommitIndex]);
+    }, [isPlaying, commits.length, previewCommitIndex, setCommitIndex]);
 
     const commit = commits[currentCommitIndex];
 
@@ -240,109 +279,166 @@ const UI = ({ colorMode, setColorMode }) => {
 
     // ─── City View UI (repo loaded) ──────────────────────────────────────────
     return (
-        <div className="absolute inset-0 pointer-events-none z-30 flex flex-col justify-between p-4">
+        <div className="absolute inset-0 pointer-events-none z-30 flex flex-col justify-between p-3 sm:p-4 lg:p-5">
 
             {/* Top Bar */}
-            <div className="flex flex-col gap-3">
-                <div className="flex gap-3 items-center flex-wrap">
-                    <div className="flex gap-3 pointer-events-auto bg-slate-900/80 p-4 rounded-xl backdrop-blur border border-slate-700 w-fit custom-shadow items-center">
-                        <Github size={24} className="text-blue-400 shrink-0" />
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-start lg:justify-between lg:gap-4">
+                <div className="flex flex-col items-start gap-2 min-w-0 max-w-full">
+                    {/* Repository loading stays in its own card, separate from view controls. */}
+                    <div className="flex items-center gap-2 pointer-events-auto max-w-full rounded-2xl border border-slate-700/90 bg-slate-950/90 p-2 shadow-xl shadow-slate-950/20 backdrop-blur-xl">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-slate-800 text-blue-400">
+                            <Github size={21} />
+                        </div>
                         <input
                             type="text"
                             value={inputUrl}
                             onChange={(e) => setInputUrl(e.target.value)}
                             onKeyDown={(e) => e.key === 'Enter' && handleLoad()}
                             placeholder="https://github.com/owner/repo"
-                            className="bg-slate-800 text-white px-4 py-2 rounded-lg border border-slate-600 outline-none focus:border-blue-500 w-96 text-sm"
+                            aria-label="GitHub repository URL"
+                            className="min-w-0 w-32 sm:w-56 lg:w-64 xl:w-72 max-w-[38vw] rounded-xl border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20"
                         />
                         <button
                             onClick={handleLoad}
                             disabled={loading}
-                            className="bg-blue-600 hover:bg-blue-500 disabled:bg-slate-600 px-6 py-2 rounded-lg text-white font-semibold transition min-w-[140px]"
+                            className="flex shrink-0 items-center justify-center gap-2 rounded-xl bg-blue-600 px-3 sm:px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-wait disabled:bg-slate-700"
                         >
-                            {loading && !commits.length ? 'Loading...' : 'Load Repo'}
+                            {loading && !commits.length ? <Loader2 size={15} className="animate-spin" /> : null}
+                            <span>{loading && !commits.length ? 'Loading' : 'Load repo'}</span>
                         </button>
                     </div>
 
-                    {/* Color Mode + Graph + AI + Stats Toggles */}
-                    {commits.length > 0 && (
-                        <div className="pointer-events-auto flex flex-wrap bg-slate-900/80 backdrop-blur border border-slate-700 rounded-xl overflow-hidden custom-shadow">
-                            <button
-                                onClick={() => setColorMode('filetype')}
-                                className={`flex items-center gap-2 px-4 py-3 text-sm transition ${colorMode === 'filetype' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                            >
-                                <Palette size={16} /> File Type
-                            </button>
-                            <button
-                                onClick={() => setColorMode('heatmap')}
-                                className={`flex items-center gap-2 px-4 py-3 text-sm transition ${colorMode === 'heatmap' ? 'bg-orange-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                            >
-                                <Flame size={16} /> Heatmap
-                            </button>
-                            <div className="w-px bg-slate-700"></div>
-                            <button
-                                onClick={toggleCommitGraph}
-                                className={`flex items-center gap-2 px-4 py-3 text-sm transition ${showCommitGraph ? 'bg-emerald-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                                title="Toggle Commit Graph"
-                            >
-                                <GitBranch size={16} /> Graph
-                            </button>
-                            <button
-                                onClick={toggleLanguageStats}
-                                className={`flex items-center gap-2 px-4 py-3 text-sm transition ${showLanguageStats ? 'bg-cyan-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                                title="Language Statistics"
-                            >
-                                <BarChart3 size={16} /> Stats
-                            </button>
-                            <button
-                                onClick={toggleAISummary}
-                                className={`flex items-center gap-2 px-4 py-3 text-sm transition ${showAISummary ? 'bg-amber-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                                title="AI Repository Summary"
-                            >
-                                <Sparkles size={16} /> AI
-                            </button>
+                    {owner && repoName && (
+                        <div className="pointer-events-auto flex max-w-full flex-wrap items-center gap-x-2 px-2 text-xs text-slate-300">
+                            <span className="font-semibold text-white">{owner}/{repoName}</span>
+                            <span className="text-slate-600">•</span>
+                            <span>{commits.length} commits</span>
+                            <span className="text-slate-600">•</span>
+                            <span>{branches.length} branches</span>
                         </div>
                     )}
                 </div>
 
-                {owner && repoName && (
-                    <div className="pointer-events-auto bg-slate-900/60 px-4 py-2 rounded-lg backdrop-blur border border-slate-700 w-fit text-sm text-slate-300">
-                        Viewing: <strong className="text-white">{owner}/{repoName}</strong>
-                        {' · '}{commits.length} commits · {branches.length} branches
+                {/* Visualization controls live in a separate dock. */}
+                {commits.length > 0 && (
+                    <div className="pointer-events-auto relative flex max-w-full flex-wrap items-center gap-1 rounded-2xl border border-slate-700/90 bg-slate-950/90 p-1.5 shadow-xl shadow-slate-950/20 backdrop-blur-xl">
+                        <div className="flex items-center gap-0.5 rounded-xl bg-slate-900/80 p-1">
+                            <button
+                                onClick={() => setColorMode('filetype')}
+                                aria-pressed={colorMode === 'filetype'}
+                                className={`flex items-center gap-2 rounded-lg px-2.5 sm:px-3 py-2.5 text-sm transition ${colorMode === 'filetype' ? 'bg-blue-600 text-white shadow-md shadow-blue-950/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+                            >
+                                <Palette size={16} /> <span className="hidden sm:inline">File type</span>
+                            </button>
+                            <button
+                                onClick={() => setColorMode('heatmap')}
+                                aria-pressed={colorMode === 'heatmap'}
+                                className={`flex items-center gap-2 rounded-lg px-2.5 sm:px-3 py-2.5 text-sm transition ${colorMode === 'heatmap' ? 'bg-blue-600 text-white shadow-md shadow-blue-950/30' : 'text-slate-400 hover:bg-slate-800 hover:text-white'}`}
+                            >
+                                <Flame size={16} /> <span className="hidden sm:inline">Heatmap</span>
+                            </button>
+                        </div>
+
+                        <div className="relative" ref={toolsPopoverRef}>
+                                <button
+                                    onClick={() => {
+                                        if (showTools) {
+                                            setShowTools(false);
+                                        } else {
+                                            closeOtherPanels('menu');
+                                            setShowTools(true);
+                                        }
+                                    }}
+                                    className={`flex items-center gap-2 rounded-xl px-2.5 sm:px-3 py-2.5 text-sm transition ${showTools || showContributors || showLanguageFilter || showCommitGraph || showLanguageStats || showAISummary ? 'bg-slate-800 text-white' : 'text-slate-300 hover:bg-slate-800 hover:text-white'}`}
+                                    aria-expanded={showTools}
+                                    aria-haspopup="menu"
+                                >
+                                    <SlidersHorizontal size={16} /> <span>Explore</span><ChevronDown size={14} className={`transition-transform ${showTools ? 'rotate-180' : ''}`} />
+                                </button>
+                                {showTools && (
+                                    <div className="absolute right-0 top-full z-[70] mt-2 max-h-[calc(100vh-7rem)] w-[min(19rem,calc(100vw-1.5rem))] overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950/95 p-2 shadow-2xl shadow-black/40 backdrop-blur-xl" role="menu" aria-label="Repository tools">
+                                        <div className="px-3 pb-2 pt-1">
+                                            <div className="text-sm font-semibold text-white">Explore repository</div>
+                                            <div className="mt-0.5 text-xs text-slate-500">Insights and ways to focus the city</div>
+                                        </div>
+                                        <div className="space-y-1 border-t border-slate-800 pt-2">
+                                            <button role="menuitem" onClick={() => { closeOtherPanels('contributors'); setShowContributors(true); setShowTools(false); }} className="group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-900">
+                                                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-violet-400/10 text-violet-300"><Users size={17} /></span>
+                                                <span className="min-w-0 flex-1"><span className="block text-sm font-medium text-slate-100">Top contributors</span><span className="mt-0.5 block text-xs text-slate-500">See who shaped this repository</span></span>
+                                                <span className="text-xs tabular-nums text-slate-500">{contributors.length}</span>
+                                            </button>
+                                            <button role="menuitem" onClick={() => { closeOtherPanels('filter'); setShowLanguageFilter(true); setShowTools(false); }} className="group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-900">
+                                                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-cyan-400/10 text-cyan-300"><Filter size={17} /></span>
+                                                <span className="min-w-0 flex-1"><span className="block text-sm font-medium text-slate-100">Filter by language</span><span className="mt-0.5 block text-xs text-slate-500">Focus on selected file types</span></span>
+                                                <ArrowRight size={14} className="text-slate-600 transition group-hover:translate-x-0.5 group-hover:text-slate-300" />
+                                            </button>
+                                        </div>
+                                        <div className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500">Repository insights</div>
+                                        <div className="space-y-1 border-t border-slate-800 pt-2">
+                                            <button role="menuitem" onClick={() => { closeOtherPanels('stats'); if (!showLanguageStats) closeCodeViewer(); toggleLanguageStats(); setShowTools(false); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-900">
+                                                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-blue-400/10 text-blue-300"><BarChart3 size={16} /></span><span className="flex-1 text-sm text-slate-200">Language stats</span>{showLanguageStats && <Check size={15} className="text-blue-400" />}
+                                            </button>
+                                            <button role="menuitem" onClick={() => { closeOtherPanels('graph'); toggleCommitGraph(); setShowTools(false); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-900">
+                                                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-emerald-400/10 text-emerald-300"><GitBranch size={16} /></span><span className="flex-1 text-sm text-slate-200">Commit graph</span>{showCommitGraph && <Check size={15} className="text-blue-400" />}
+                                            </button>
+                                            <button role="menuitem" onClick={() => { closeOtherPanels('ai'); if (!showAISummary) closeCodeViewer(); toggleAISummary(); setShowTools(false); }} className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition hover:bg-slate-900">
+                                                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-amber-400/10 text-amber-300"><Sparkles size={16} /></span><span className="flex-1 text-sm text-slate-200">AI summary</span>{showAISummary && <Check size={15} className="text-blue-400" />}
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+                                {showContributors && (
+                                    <div className="absolute right-0 top-full z-[70] mt-2 max-h-[min(60vh,32rem)] w-[min(20rem,calc(100vw-1.5rem))] overflow-y-auto rounded-2xl border border-slate-700 bg-slate-950/95 p-4 shadow-2xl shadow-black/40 backdrop-blur-xl">
+                                        <div className="mb-3 flex items-start justify-between gap-3">
+                                            <div><h2 className="text-sm font-semibold text-white">Top contributors</h2><p className="mt-0.5 text-xs text-slate-500">Ranked by commits in this history</p></div>
+                                            <button onClick={() => setShowContributors(false)} aria-label="Close contributors" className="rounded-lg p-1 text-slate-500 hover:bg-slate-800 hover:text-white"><X size={16} /></button>
+                                        </div>
+                                        <div className="space-y-1 border-t border-slate-800 pt-2">
+                                            {contributors.slice(0, 10).map((contributor, index) => (
+                                                <div key={`${contributor.name}-${index}`} className="flex items-center justify-between gap-3 rounded-xl px-2 py-2 text-sm hover:bg-slate-900/70">
+                                                    <div className="flex min-w-0 items-center gap-2.5">
+                                                        {contributor.avatar ? <img src={contributor.avatar} alt="" className="h-7 w-7 shrink-0 rounded-full ring-1 ring-slate-700" /> : <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-800 text-xs text-slate-400">{contributor.name?.[0] || '?'}</span>}
+                                                        <span className="truncate text-slate-200">{contributor.name}</span>
+                                                    </div>
+                                                    <span className="shrink-0 rounded-lg bg-slate-900 px-2 py-1 font-mono text-xs text-blue-300">{contributor.commits}</span>
+                                                </div>
+                                            ))}
+                                            {contributors.length === 0 && <p className="px-2 py-4 text-sm text-slate-500">No contributor data available.</p>}
+                                        </div>
+                                    </div>
+                                )}
+                                {showLanguageFilter && (
+                                    <div className="absolute right-0 top-full z-[70] mt-2 w-[min(20rem,calc(100vw-1.5rem))]">
+                                        <LanguageFilter />
+                                    </div>
+                                )}
+                            </div>
+                        <div className="relative">
+                            <SearchPanel />
+                        </div>
                     </div>
                 )}
 
                 {error && (
-                    <div className="bg-red-900/80 p-4 rounded-xl border border-red-500 text-red-200 pointer-events-auto max-w-md">
+                    <div className="pointer-events-auto max-w-md rounded-xl border border-red-500/40 bg-red-950/90 p-4 text-sm text-red-200 shadow-xl backdrop-blur">
                         {error}
                     </div>
                 )}
             </div>
-
-            {/* Right Panel: Contributors (hidden when AI panel is shown) */}
-            {commits.length > 0 && !showAISummary && (
-                <div className="absolute top-28 right-4 bg-slate-900/80 p-6 rounded-xl backdrop-blur border border-slate-700 w-80 max-h-[60vh] overflow-y-auto pointer-events-auto custom-shadow">
-                    <h2 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent mb-4">Top Contributors</h2>
-                    <div className="flex flex-col gap-3">
-                        {contributors.slice(0, 10).map((c, i) => (
-                            <div key={i} className="flex justify-between items-center text-sm">
-                                <div className="flex items-center gap-2 truncate mr-2">
-                                    {c.avatar && <img src={c.avatar} alt="" className="w-6 h-6 rounded-full" />}
-                                    <span className="truncate max-w-[120px]">{c.name}</span>
-                                </div>
-                                <span className="text-blue-400 font-mono bg-slate-800 px-2 py-1 rounded text-xs">{c.commits}</span>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
 
             {/* Bottom Timeline */}
             {commits.length > 0 && (
                 <div className="pointer-events-auto bg-slate-900/90 p-6 rounded-xl backdrop-blur border border-slate-700 w-full max-w-4xl mx-auto flex flex-col gap-4 custom-shadow">
                     <div className="flex items-center gap-6">
                         <button
-                            onClick={() => setIsPlaying(!isPlaying)}
+                            onClick={() => {
+                                if (isPlaying) {
+                                    setIsPlaying(false);
+                                    setCommitIndex(currentCommitIndex);
+                                } else {
+                                    setIsPlaying(true);
+                                }
+                            }}
                             className="w-12 h-12 flex items-center justify-center bg-blue-600 hover:bg-blue-500 rounded-full transition-colors text-white shrink-0"
                         >
                             {isPlaying ? <Pause size={20} /> : <Play size={20} className="ml-1" />}
@@ -368,7 +464,9 @@ const UI = ({ colorMode, setColorMode }) => {
                             min={0}
                             max={commits.length - 1}
                             value={currentCommitIndex}
-                            onChange={(e) => setCommitIndex(Number(e.target.value))}
+                            onChange={(e) => previewCommitIndex(Number(e.target.value))}
+                            onPointerUp={() => setCommitIndex(useStore.getState().currentCommitIndex)}
+                            onKeyUp={() => setCommitIndex(useStore.getState().currentCommitIndex)}
                             className="flex-1 h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-blue-500"
                         />
                         <span className="text-xs text-slate-500 w-16">Oldest</span>
