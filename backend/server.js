@@ -120,7 +120,7 @@ app.post('/security/scan', aiLimiter, async (req, res) => {
             return res.status(400).json({ error: 'A valid full commit SHA is required.' });
         }
         if (!process.env.RAG_SERVICE_TOKEN) {
-            return res.status(503).json({ error: 'Set RAG_SERVICE_TOKEN in backend/.env and ragservice/.env before running scans.' });
+            return res.status(503).json({ error: 'Set the same RAG_SERVICE_TOKEN in both the Express and FastAPI process environments before running scans.' });
         }
 
         const actionsHeaders = securityActionHeaders();
