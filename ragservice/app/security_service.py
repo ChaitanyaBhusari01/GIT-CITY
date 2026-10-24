@@ -16,24 +16,29 @@ MAX_CODE_FLOW_STEPS = 40
 
 
 def _finding_query(finding: dict[str, Any]) -> str:
-    """Build a retrieval query from normalized CodeQL and AST fields."""
+    """Build a bounded retrieval query from normalized CodeQL and AST fields."""
     context = finding.get("ast_context") or {}
     construct = context.get("construct") or {}
     symbol = context.get("symbol") or {}
 
+    def clipped(value: Any, limit: int = 1800) -> str:
+        if value is None:
+            return ""
+        return str(value)[:limit]
+
     parts = [
-        f"Security rule: {finding.get('rule_id', 'unknown')}",
-        f"Finding message: {finding.get('message', '')}",
-        f"Affected file: {finding.get('file_path', '')}",
-        f"Affected line: {finding.get('start_line', '')}",
-        f"Source construct: {construct.get('type', '')}",
-        f"Construct code: {construct.get('code', '')}",
-        f"Enclosing symbol: {symbol.get('name', '')}",
-        f"Symbol type: {symbol.get('type', '')}",
-        f"Symbol code: {symbol.get('code', '')}",
+        f"Security rule: {clipped(finding.get('rule_id', 'unknown'), 300)}",
+        f"Finding message: {clipped(finding.get('message', ''), 1200)}",
+        f"Affected file: {clipped(finding.get('file_path', ''), 500)}",
+        f"Affected line: {clipped(finding.get('start_line', ''), 30)}",
+        f"Source construct: {clipped(construct.get('type', ''), 200)}",
+        f"Construct code: {clipped(construct.get('code', ''))}",
+        f"Enclosing symbol: {clipped(symbol.get('name', ''), 300)}",
+        f"Symbol type: {clipped(symbol.get('type', ''), 200)}",
+        f"Symbol code: {clipped(symbol.get('code', ''))}",
     ]
 
-    extra_query = finding.get("retrieval_query")
+    extra_query = clipped(finding.get("retrieval_query"), 1200)
     if extra_query:
         parts.append(f"Additional investigation query: {extra_query}")
 
@@ -253,20 +258,67 @@ Return a useful Markdown report with these headings:
 Assessment and confidence are your reasoned judgments, not values supplied by
 CodeQL. Be concise, specific, and honest about uncertainty."""
 
-    # Keep prompts compact and avoid sending the complete raw SARIF result,
-    # which can contain verbose rule help and duplicated source-flow metadata.
-    finding_fields = (
-        "rule_id", "level", "result_level", "security_severity",
-        "severity_source", "message", "file_path", "start_line", "end_line",
-        "rule_metadata", "primary_location", "source_snippet",
-        "source_snippet_precision", "source_snippet_status",
-        "ast_context", "ast_context_status", "code_flow_steps",
-        "normalized_related_locations", "baseline_state",
-    )
+    # Keep prompts compact: direct code, AST snippets and CodeQL flow steps
+    # are already represented by the bounded, provenance-labelled evidence list.
+    metadata = finding.get("rule_metadata") or {}
+    location = finding.get("primary_location") or {}
+    context = finding.get("ast_context") or {}
+    construct = context.get("construct") or {}
+    symbol = context.get("symbol") or {}
+    related_locations = finding.get("normalized_related_locations") or []
+    flow_steps = finding.get("code_flow_steps") or []
+
     compact_finding = {
-        key: finding.get(key)
-        for key in finding_fields
-        if finding.get(key) is not None
+        "rule_id": finding.get("rule_id"),
+        "level": finding.get("level"),
+        "result_level": finding.get("result_level"),
+        "security_severity": finding.get("security_severity"),
+        "severity_source": finding.get("severity_source"),
+        "message": str(finding.get("message") or "")[:1500],
+        "file_path": finding.get("file_path"),
+        "start_line": finding.get("start_line"),
+        "end_line": finding.get("end_line"),
+        "rule_metadata": {
+            key: metadata.get(key)
+            for key in (
+                "id", "name", "short_description", "help_uri",
+                "component_name",
+            )
+            if metadata.get(key) is not None
+        },
+        "primary_location": {
+            key: location.get(key)
+            for key in (
+                "file_path", "start_line", "end_line",
+                "start_column", "end_column", "message",
+            )
+            if location.get(key) is not None
+        },
+        "source_snippet_status": finding.get("source_snippet_status"),
+        "ast_context_status": finding.get("ast_context_status"),
+        "ast_context": {
+            "construct": {
+                key: construct.get(key)
+                for key in ("type", "start_line", "end_line")
+                if construct.get(key) is not None
+            },
+            "symbol": {
+                key: symbol.get(key)
+                for key in ("type", "name", "start_line", "end_line")
+                if symbol.get(key) is not None
+            },
+        } if context else None,
+        "related_location_count": len(related_locations),
+        "related_locations": [
+            {
+                key: location_item.get(key)
+                for key in ("file_path", "start_line", "end_line", "message")
+                if location_item.get(key) is not None
+            }
+            for location_item in related_locations[:20]
+        ],
+        "code_flow_step_count": len(flow_steps),
+        "baseline_state": finding.get("baseline_state"),
     }
 
     user_payload = {
