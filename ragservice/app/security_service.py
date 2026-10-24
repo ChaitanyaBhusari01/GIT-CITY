@@ -149,15 +149,22 @@ def analyze_security_finding(
         raise ValueError("finding must be a non-empty object.")
 
     query = _finding_query(finding)
-    query_embedding = embed_text(query)
+    evidence_rows: list[dict[str, Any]] = []
+    retrieval_error: str | None = None
 
-    evidence_rows = search_chunks(
-        repository_id,
-        commit_sha,
-        query_embedding,
-        top_k=top_k,
-    )
-
+    # Retrieval is a valuable enhancement, but missing Neon credentials,
+    # an unindexed revision, or an embedding-provider outage must not prevent
+    # direct SARIF/source evidence from receiving an AI assessment.
+    try:
+        query_embedding = embed_text(query)
+        evidence_rows = search_chunks(
+            repository_id,
+            commit_sha,
+            query_embedding,
+            top_k=top_k,
+        )
+    except Exception as exc:
+        retrieval_error = f"{type(exc).__name__}: {str(exc)[:300]}"
 
     evidence = _build_direct_evidence(finding)
     direct_evidence_count = len(evidence)
@@ -213,10 +220,26 @@ Return a useful Markdown report with these headings:
 Assessment and confidence are your reasoned judgments, not values supplied by
 CodeQL. Be concise, specific, and honest about uncertainty."""
 
+    # Keep prompts compact and avoid sending the complete raw SARIF result,
+    # which can contain verbose rule help and duplicated source-flow metadata.
+    finding_fields = (
+        "rule_id", "level", "result_level", "security_severity",
+        "severity_source", "message", "file_path", "start_line", "end_line",
+        "rule_metadata", "primary_location", "source_snippet",
+        "source_snippet_precision", "source_snippet_status",
+        "ast_context", "ast_context_status", "code_flow_steps",
+        "normalized_related_locations", "baseline_state",
+    )
+    compact_finding = {
+        key: finding.get(key)
+        for key in finding_fields
+        if finding.get(key) is not None
+    }
+
     user_payload = {
         "repository_id": repository_id,
         "commit_sha": commit_sha,
-        "codeql_finding": finding,
+        "codeql_finding": compact_finding,
         "retrieved_evidence": evidence,
         "query_used_for_retrieval": query,
     }
@@ -243,4 +266,10 @@ CodeQL. Be concise, specific, and honest about uncertainty."""
         "analysis": analysis,
         "direct_evidence_count": direct_evidence_count,
         "retrieved_evidence_count": len(evidence_rows),
+        "retrieval_status": (
+            "unavailable" if retrieval_error
+            else "completed" if evidence_rows
+            else "no_matches"
+        ),
+        "retrieval_error": retrieval_error,
     }
