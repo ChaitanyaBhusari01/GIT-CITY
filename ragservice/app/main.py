@@ -360,6 +360,11 @@ def _run_security_pipeline(
                 job["analysis_status"] = "processing"
                 analysis_limit = job["analysis_limit"]
                 selected = list(enumerate(findings[:analysis_limit]))
+                if len(findings) > analysis_limit:
+                    warnings.append(
+                        f"AI analysis was limited to {analysis_limit} findings for this scan; "
+                        "remaining findings are still returned without AI explanations."
+                    )
                 for finding in findings[analysis_limit:]:
                     finding["analysis_status"] = "skipped_limit"
                     finding["analysis"] = None
