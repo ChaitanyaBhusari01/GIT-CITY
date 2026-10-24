@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
 const rateLimit = require('express-rate-limit');
+const { randomUUID } = require('crypto');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -62,6 +63,221 @@ app.use('/repo', (req, res, next) => {
 });
 
 const GITHUB_API = 'https://api.github.com';
+
+// ─── Security scan orchestration ──────────────────────────────────────────────
+const securityScans = new Map();
+const SECURITY_SCAN_TTL_MS = 60 * 60 * 1000;
+const GITCITY_REPOSITORY = process.env.GITCITY_REPOSITORY || 'ChaitanyaBhusari01/GIT-CITY';
+const CODEQL_WORKFLOW_FILE = 'codeql-scan.yml';
+
+function securityActionHeaders() {
+    const token = process.env.GITHUB_ACTIONS_TOKEN || process.env.GITHUB_TOKEN;
+    if (!token) {
+        throw new Error('Set GITHUB_ACTIONS_TOKEN (Actions: write) or a GITHUB_TOKEN with Actions: write on the GitCity repository.');
+    }
+    return {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2026-03-10',
+        'User-Agent': 'GitCity'
+    };
+}
+
+function securityScanPayload(scan) {
+    return {
+        scan_id: scan.scanId,
+        status: scan.status,
+        repository_id: `${scan.owner}/${scan.repo}`,
+        commit_sha: scan.commitSha,
+        workflow_run_id: scan.workflowRunId,
+        workflow_url: scan.workflowUrl,
+        finding_count: scan.findingCount ?? null,
+        findings: scan.findings ?? [],
+        error: scan.error ?? null
+    };
+}
+
+function securityScanError(error) {
+    const detail = error.response?.data?.detail;
+    const apiMessage = error.response?.data?.message;
+    return (typeof detail === 'string' && detail) ||
+        (typeof apiMessage === 'string' && apiMessage) ||
+        error.response?.data?.error?.message ||
+        error.message ||
+        'Unknown security scan error.';
+}
+
+app.post('/security/scan', aiLimiter, async (req, res) => {
+    try {
+        const { owner, repo, commit_sha: commitSha } = req.body || {};
+
+        if (typeof owner !== 'string' || typeof repo !== 'string' ||
+            !/^[A-Za-z0-9_.-]{1,100}$/.test(owner) ||
+            !/^[A-Za-z0-9_.-]{1,100}$/.test(repo)) {
+            return res.status(400).json({ error: 'A valid owner and repository name are required.' });
+        }
+        if (typeof commitSha !== 'string' || !/^[A-Fa-f0-9]{40,64}$/.test(commitSha)) {
+            return res.status(400).json({ error: 'A valid full commit SHA is required.' });
+        }
+        if (!process.env.RAG_SERVICE_TOKEN) {
+            return res.status(503).json({ error: 'Set RAG_SERVICE_TOKEN in backend/.env and ragservice/.env before running scans.' });
+        }
+
+        const actionsHeaders = securityActionHeaders();
+        const repositoryResponse = await axios.get(
+            `${GITHUB_API}/repos/${owner}/${repo}`,
+            { headers: ghHeaders(), timeout: 15000 }
+        );
+        if (repositoryResponse.data.private) {
+            return res.status(400).json({ error: 'Security scans currently support public GitHub repositories only.' });
+        }
+
+        for (const [existingId, existingScan] of securityScans.entries()) {
+            if (Date.now() - existingScan.createdAt > SECURITY_SCAN_TTL_MS) {
+                securityScans.delete(existingId);
+            }
+        }
+
+        const scanId = randomUUID();
+        const workflowRef = process.env.CODEQL_WORKFLOW_REF || 'main';
+        const dispatchUrl = `${GITHUB_API}/repos/${GITCITY_REPOSITORY}/actions/workflows/${CODEQL_WORKFLOW_FILE}/dispatches?return_run_details=true`;
+        const dispatchResponse = await axios.post(dispatchUrl, {
+            ref: workflowRef,
+            inputs: {
+                repository: `${owner}/${repo}`,
+                commit_sha: commitSha.toLowerCase(),
+                scan_id: scanId
+            }
+        }, {
+            headers: actionsHeaders,
+            timeout: 20000
+        });
+
+        const workflowRunId = Number(dispatchResponse.data?.workflow_run_id);
+        if (!Number.isSafeInteger(workflowRunId) || workflowRunId <= 0) {
+            return res.status(502).json({
+                error: 'GitHub did not return a workflow run ID. Confirm the workflow_dispatch workflow is available on the configured ref.'
+            });
+        }
+
+        const scan = {
+            scanId,
+            owner,
+            repo,
+            commitSha: commitSha.toLowerCase(),
+            workflowRunId,
+            workflowUrl: dispatchResponse.data?.html_url || null,
+            status: 'queued',
+            findings: [],
+            findingCount: null,
+            error: null,
+            forwarding: false,
+            createdAt: Date.now()
+        };
+        securityScans.set(scanId, scan);
+
+        return res.status(202).json(securityScanPayload(scan));
+    } catch (error) {
+        console.error('[SECURITY SCAN] Dispatch failed:', securityScanError(error));
+        const githubStatus = error.response?.status;
+        const status = githubStatus && githubStatus >= 400 && githubStatus < 500 ? githubStatus : 502;
+        return res.status(status).json({ error: securityScanError(error) });
+    }
+});
+
+app.get('/security/scan/:scanId', async (req, res) => {
+    const scan = securityScans.get(req.params.scanId);
+    if (!scan) {
+        return res.status(404).json({ error: 'Security scan not found or expired. Start a new scan.' });
+    }
+    if (scan.status === 'completed' || scan.status === 'failed' || scan.forwarding) {
+        return res.json(securityScanPayload(scan));
+    }
+
+    try {
+        const headers = securityActionHeaders();
+        const runResponse = await axios.get(
+            `${GITHUB_API}/repos/${GITCITY_REPOSITORY}/actions/runs/${scan.workflowRunId}`,
+            { headers, timeout: 15000 }
+        );
+        const run = runResponse.data;
+
+        if (run.status !== 'completed') {
+            scan.status = run.status === 'in_progress' ? 'in_progress' : 'queued';
+            return res.json(securityScanPayload(scan));
+        }
+
+        if (run.conclusion !== 'success') {
+            scan.status = 'failed';
+            scan.error = `CodeQL workflow ${run.conclusion || 'failed'}.`;
+            return res.json(securityScanPayload(scan));
+        }
+
+        scan.status = 'processing_report';
+        scan.forwarding = true;
+        try {
+            const artifactResponse = await axios.get(
+                `${GITHUB_API}/repos/${GITCITY_REPOSITORY}/actions/runs/${scan.workflowRunId}/artifacts`,
+                { headers, timeout: 15000 }
+            );
+            const artifact = (artifactResponse.data.artifacts || []).find(
+                item => item.name === 'codeql-security-report' && !item.expired
+            );
+            if (!artifact) {
+                throw new Error('The CodeQL workflow completed but its SARIF artifact was not found.');
+            }
+
+            const artifactResponseZip = await axios.get(
+                `${GITHUB_API}/repos/${GITCITY_REPOSITORY}/actions/artifacts/${artifact.id}/zip`,
+                {
+                    headers,
+                    responseType: 'arraybuffer',
+                    timeout: 90000,
+                    maxContentLength: 50 * 1024 * 1024
+                }
+            );
+            const ragBaseUrl = (process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+            const ragResponse = await axios.post(
+                `${ragBaseUrl}/security/scan`,
+                Buffer.from(artifactResponseZip.data),
+                {
+                    params: {
+                        repository_id: `${scan.owner}/${scan.repo}`,
+                        commit_sha: scan.commitSha,
+                        top_k: 6
+                    },
+                    headers: {
+                        'Content-Type': 'application/zip',
+                        'Authorization': `Bearer ${process.env.RAG_SERVICE_TOKEN}`
+                    },
+                    timeout: 120000,
+                    maxBodyLength: 50 * 1024 * 1024,
+                    maxContentLength: 50 * 1024 * 1024
+                }
+            );
+
+            scan.findings = Array.isArray(ragResponse.data.findings) ? ragResponse.data.findings : [];
+            scan.findingCount = Number.isInteger(ragResponse.data.finding_count)
+                ? ragResponse.data.finding_count
+                : scan.findings.length;
+            scan.status = 'completed';
+            scan.error = null;
+        } catch (error) {
+            scan.status = 'failed';
+            scan.error = securityScanError(error);
+            console.error('[SECURITY SCAN] Report forwarding failed:', scan.error);
+        } finally {
+            scan.forwarding = false;
+        }
+
+        return res.json(securityScanPayload(scan));
+    } catch (error) {
+        console.error('[SECURITY SCAN] Status check failed:', securityScanError(error));
+        return res.status(502).json({ error: securityScanError(error) });
+    }
+});
+// ──────────────────────────────────────────────────────────────────────────────
+
 
 // ─── In-memory cache with 5-minute TTL and size limit ───────────────────────────────────────
 const cache = {};

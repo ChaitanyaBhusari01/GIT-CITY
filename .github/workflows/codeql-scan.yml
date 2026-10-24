@@ -1,24 +1,56 @@
 name: CodeQL Security Scan
+run-name: GitCity security scan ${{ inputs.scan_id }}
 
 on:
   workflow_dispatch:
     inputs:
       repository:
-        description: "Public GitHub repository URL"
+        description: "Public GitHub repository in owner/repo format"
+        required: true
+        type: string
+      commit_sha:
+        description: "Exact commit SHA to scan"
+        required: true
+        type: string
+      scan_id:
+        description: "GitCity scan identifier"
         required: true
         type: string
 
 jobs:
   scan:
     runs-on: ubuntu-latest
-
     permissions:
       contents: read
 
     steps:
-      - name: Clone target repository
+      - name: Checkout exact target commit
+        env:
+          TARGET_REPOSITORY: ${{ inputs.repository }}
+          TARGET_COMMIT_SHA: ${{ inputs.commit_sha }}
         run: |
-          git clone --depth 1 "${{ inputs.repository }}" target-repo
+          set -euo pipefail
+
+          if [[ ! "$TARGET_REPOSITORY" =~ ^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$ ]]; then
+            echo "Repository must be in owner/repo format." >&2
+            exit 1
+          fi
+
+          if [[ ! "$TARGET_COMMIT_SHA" =~ ^[a-fA-F0-9]{40,64}$ ]]; then
+            echo "Commit SHA must contain 40-64 hexadecimal characters." >&2
+            exit 1
+          fi
+
+          git init target-repo
+          git -C target-repo remote add origin "https://github.com/${TARGET_REPOSITORY}.git"
+          git -C target-repo fetch --depth 1 origin "$TARGET_COMMIT_SHA"
+          git -C target-repo checkout --detach FETCH_HEAD
+
+          ACTUAL_SHA="$(git -C target-repo rev-parse HEAD)"
+          if [[ "${ACTUAL_SHA,,}" != "${TARGET_COMMIT_SHA,,}" ]]; then
+            echo "Checked-out commit did not match the requested SHA." >&2
+            exit 1
+          fi
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

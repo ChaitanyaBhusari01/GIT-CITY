@@ -19,6 +19,11 @@ const useStore = create((set, get) => ({
     branches: [],
     loading: false,
     error: null,
+    securityScanId: null,
+    securityScanStatus: 'idle',
+    securityScanError: null,
+    securityFindings: [],
+    securityScanCommitSha: null,
 
     // File Evolution Viewer state
     selectedFile: null,
@@ -64,6 +69,8 @@ const useStore = create((set, get) => ({
         set({
             repoUrl: url, commits: [], tree: [], treeCommitSha: null, fileStats: {}, contributors: [], branches: [],
             currentCommitIndex: 0, error: null, owner: null, repoName: null,
+            securityScanId: null, securityScanStatus: 'idle', securityScanError: null,
+            securityFindings: [], securityScanCommitSha: null,
             languageFilter: null,
             selectedFile: null, selectedFileDependencies: [], fileHistory: [],
             commitGraph: [], aiSummary: null, aiSummaryError: null,
@@ -187,10 +194,116 @@ const useStore = create((set, get) => ({
             const { owner, repoName } = get();
             const treeRes = await axios.get(`${API_BASE}/repo/tree`, { params: { owner, repo: repoName, sha } });
             if (loadId !== repoLoadId || get().commits[get().currentCommitIndex]?.hash !== sha) return;
-            set({ tree: treeRes.data, treeCommitSha: sha, loading: false });
+            const scanTargetsDifferentCommit = get().securityScanCommitSha && get().securityScanCommitSha !== sha;
+            set({
+                tree: treeRes.data,
+                treeCommitSha: sha,
+                loading: false,
+                ...(scanTargetsDifferentCommit ? {
+                    securityScanId: null,
+                    securityScanStatus: 'idle',
+                    securityScanError: null,
+                    securityFindings: [],
+                    securityScanCommitSha: null
+                } : {})
+            });
         } catch (err) {
             if (loadId !== repoLoadId || get().commits[get().currentCommitIndex]?.hash !== sha) return;
             set({ error: err.response?.data?.error || err.message, loading: false });
+        }
+    },
+
+
+    // Security scan actions
+    startSecurityScan: async () => {
+        const { owner, repoName, treeCommitSha } = get();
+        const busyStates = ['starting', 'queued', 'in_progress', 'processing_report'];
+        if (busyStates.includes(get().securityScanStatus)) return;
+
+        if (!owner || !repoName || !treeCommitSha) {
+            set({
+                securityScanStatus: 'failed',
+                securityScanError: 'Load a repository and wait for its file tree to finish loading before scanning.'
+            });
+            return;
+        }
+
+        const loadId = repoLoadId;
+        const commitSha = treeCommitSha;
+        set({
+            securityScanId: null,
+            securityScanStatus: 'starting',
+            securityScanError: null,
+            securityFindings: [],
+            securityScanCommitSha: commitSha
+        });
+
+        try {
+            const response = await axios.post(`${API_BASE}/security/scan`, {
+                owner,
+                repo: repoName,
+                commit_sha: commitSha
+            });
+            if (loadId !== repoLoadId) return;
+
+            const scanId = response.data.scan_id;
+            if (!scanId) throw new Error('Backend did not return a security scan ID.');
+            set({
+                securityScanId: scanId,
+                securityScanStatus: response.data.status || 'queued'
+            });
+
+            const pollScan = async () => {
+                const current = get();
+                if (loadId !== repoLoadId || current.securityScanId !== scanId) return;
+
+                try {
+                    const statusResponse = await axios.get(
+                        `${API_BASE}/security/scan/${encodeURIComponent(scanId)}`
+                    );
+                    if (loadId !== repoLoadId || get().securityScanId !== scanId) return;
+
+                    const data = statusResponse.data;
+                    if (data.status === 'completed') {
+                        set({
+                            securityScanStatus: 'completed',
+                            securityScanError: null,
+                            securityFindings: Array.isArray(data.findings) ? data.findings : []
+                        });
+                        return;
+                    }
+                    if (data.status === 'failed') {
+                        set({
+                            securityScanStatus: 'failed',
+                            securityScanError: data.error || 'Security scan failed.'
+                        });
+                        return;
+                    }
+
+                    set({ securityScanStatus: data.status || 'in_progress' });
+                    setTimeout(pollScan, 2500);
+                } catch (err) {
+                    if (loadId !== repoLoadId || get().securityScanId !== scanId) return;
+                    set({
+                        securityScanStatus: 'failed',
+                        securityScanError: err.response?.data?.error ||
+                            err.response?.data?.detail ||
+                            err.message ||
+                            'Could not retrieve security scan status.'
+                    });
+                }
+            };
+
+            setTimeout(pollScan, 1500);
+        } catch (err) {
+            if (loadId !== repoLoadId) return;
+            set({
+                securityScanStatus: 'failed',
+                securityScanError: err.response?.data?.error ||
+                    err.response?.data?.detail ||
+                    err.message ||
+                    'Could not start the security scan.'
+            });
         }
     },
 

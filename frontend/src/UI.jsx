@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import useStore from './store';
-import { Play, Pause, Github, Flame, Palette, GitBranch, Sparkles, BarChart3, Building2, Clock, Brain, ArrowRight, Loader2, Users, Filter, SlidersHorizontal, ChevronDown, Check, X } from 'lucide-react';
+import { Play, Pause, Github, Flame, Palette, GitBranch, Sparkles, BarChart3, Building2, Clock, Brain, ArrowRight, Loader2, Users, Filter, SlidersHorizontal, ChevronDown, Check, X, ShieldCheck } from 'lucide-react';
 import { format } from 'date-fns';
 import SearchPanel from './components/SearchPanel';
 import LanguageFilter from './components/LanguageFilter';
@@ -139,7 +139,13 @@ const UI = ({ colorMode, setColorMode }) => {
         toggleAISummary,
         showLanguageStats,
         toggleLanguageStats,
-        closeCodeViewer
+        closeCodeViewer,
+        treeCommitSha,
+        startSecurityScan,
+        securityScanStatus,
+        securityScanError,
+        securityFindings,
+        securityScanCommitSha
     } = useStore();
 
     const [inputUrl, setInputUrl] = useState('');
@@ -199,6 +205,7 @@ const UI = ({ colorMode, setColorMode }) => {
     }, [isPlaying, commits.length, previewCommitIndex, setCommitIndex]);
 
     const commit = commits[currentCommitIndex];
+    const securityScanBusy = ['starting', 'queued', 'in_progress', 'processing_report'].includes(securityScanStatus);
 
     const handleLoad = () => {
         if (!inputUrl.trim()) return;
@@ -315,6 +322,32 @@ const UI = ({ colorMode, setColorMode }) => {
                             <span>{commits.length} commits</span>
                             <span className="text-slate-600">•</span>
                             <span>{branches.length} branches</span>
+                        </div>
+                    )}
+                    {owner && repoName && commits.length > 0 && (
+                        <div className="pointer-events-auto flex max-w-full flex-wrap items-center gap-2 px-2">
+                            <button
+                                onClick={startSecurityScan}
+                                disabled={!treeCommitSha || loading || securityScanBusy}
+                                title={treeCommitSha ? `Scan ${owner}/${repoName} at ${treeCommitSha}` : 'Wait for the repository tree to finish loading'}
+                                className="flex items-center gap-2 rounded-xl border border-cyan-500/40 bg-cyan-500/10 px-3 py-2 text-sm font-semibold text-cyan-200 transition hover:border-cyan-400/70 hover:bg-cyan-500/20 disabled:cursor-wait disabled:opacity-60"
+                            >
+                                {securityScanBusy ? <Loader2 size={15} className="animate-spin" /> : <ShieldCheck size={15} />}
+                                <span>{securityScanBusy ? (securityScanStatus === 'processing_report' ? 'Sending report to Python...' : 'CodeQL scanning...') : securityScanStatus === 'completed' ? 'Scan again' : 'Check security'}</span>
+                            </button>
+                            {securityScanBusy && (
+                                <span className="text-xs text-cyan-200/80">
+                                    {securityScanStatus === 'queued' ? 'Queued on GitHub' : securityScanStatus === 'in_progress' ? 'CodeQL is running' : securityScanStatus === 'processing_report' ? 'Processing SARIF' : 'Starting scan'}
+                                </span>
+                            )}
+                            {securityScanStatus === 'completed' && securityScanCommitSha === treeCommitSha && (
+                                <span className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-200">
+                                    {securityFindings.length} finding{securityFindings.length === 1 ? '' : 's'}
+                                </span>
+                            )}
+                            {securityScanStatus === 'failed' && securityScanError && (
+                                <span className="max-w-md text-xs text-red-300" role="status">{securityScanError}</span>
+                            )}
                         </div>
                     )}
                 </div>
