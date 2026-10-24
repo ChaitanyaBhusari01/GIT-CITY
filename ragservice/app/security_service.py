@@ -62,12 +62,15 @@ def _build_direct_evidence(
         # AST symbols can be whole functions/classes. Cap prompt evidence size
         # while retaining the finding's precise source and line metadata.
         if isinstance(code, str) and len(code) > MAX_DIRECT_EVIDENCE_CODE_CHARS:
+            original_code_characters = len(code)
             code = code[:MAX_DIRECT_EVIDENCE_CODE_CHARS]
             extra["code_truncated"] = True
-            extra["original_code_characters"] = len(code) + 1
+            extra["original_code_characters"] = original_code_characters
         if isinstance(message, str) and len(message) > MAX_DIRECT_EVIDENCE_MESSAGE_CHARS:
+            original_message_characters = len(message)
             message = message[:MAX_DIRECT_EVIDENCE_MESSAGE_CHARS]
             extra["message_truncated"] = True
+            extra["original_message_characters"] = original_message_characters
         evidence.append({
             "id": f"E{len(evidence) + 1}",
             "evidence_type": evidence_type,
