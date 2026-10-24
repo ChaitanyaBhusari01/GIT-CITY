@@ -20,6 +20,7 @@ from app.file_filter import classify_file
 
 MAX_COMPRESSED_ARCHIVE_BYTES = 100 * 1024 * 1024
 MAX_EXTRACTED_SOURCE_BYTES = 250 * 1024 * 1024
+MAX_ARCHIVE_DECLARED_BYTES = 1024 * 1024 * 1024
 MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024
 MAX_SOURCE_FILES = 20_000
 MAX_ARCHIVE_ENTRIES = 100_000
@@ -139,6 +140,7 @@ def download_repository_source(
     extracted_bytes = 0
     extracted_files = 0
     entry_count = 0
+    declared_archive_bytes = 0
 
     try:
         with tarfile.open(archive_path, mode="r:gz") as archive:
@@ -157,6 +159,13 @@ def download_repository_source(
                 entry_count += 1
                 if entry_count > MAX_ARCHIVE_ENTRIES:
                     raise RuntimeError("Repository source archive contains too many entries.")
+
+                # Bound total uncompressed member sizes too, including files
+                # we later ignore, to avoid processing oversized compressed archives.
+                if member.isfile():
+                    declared_archive_bytes += max(member.size, 0)
+                    if declared_archive_bytes > MAX_ARCHIVE_DECLARED_BYTES:
+                        raise RuntimeError("Repository source archive expands beyond the archive size limit.")
 
                 # Filesystem links and non-regular entries are not needed for
                 # source analysis and are deliberately not extracted.
