@@ -33,6 +33,7 @@ def _validated_repository(repository_id: str, commit_sha: str) -> tuple[str, str
     parts = repository_id.split("/") if isinstance(repository_id, str) else []
     if (
         len(parts) != 2
+        or any(part in {".", ".."} for part in parts)
         or not all(GITHUB_NAME_PATTERN.fullmatch(part) for part in parts)
     ):
         raise ValueError("repository_id must be in owner/repository format.")
