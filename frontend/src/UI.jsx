@@ -5,6 +5,43 @@ import { format } from 'date-fns';
 import SearchPanel from './components/SearchPanel';
 import LanguageFilter from './components/LanguageFilter';
 
+const SECURITY_SEVERITY_STYLES = {
+    Critical: 'border-red-500/40 bg-red-500/15 text-red-200',
+    High: 'border-orange-500/40 bg-orange-500/15 text-orange-200',
+    Medium: 'border-amber-500/40 bg-amber-500/15 text-amber-200',
+    Low: 'border-sky-500/40 bg-sky-500/15 text-sky-200',
+    Error: 'border-red-500/40 bg-red-500/15 text-red-200',
+    Warning: 'border-amber-500/40 bg-amber-500/15 text-amber-200',
+    Note: 'border-slate-500/40 bg-slate-500/15 text-slate-200',
+    Unknown: 'border-slate-500/40 bg-slate-500/15 text-slate-200'
+};
+
+const getFindingSeverity = (finding) => {
+    const rawScore = finding?.security_severity;
+    const hasScore = rawScore !== null && rawScore !== undefined && rawScore !== '';
+    const score = hasScore ? Number(rawScore) : Number.NaN;
+
+    if (Number.isFinite(score) && score > 0) {
+        const label = score >= 9 ? 'Critical'
+            : score >= 7 ? 'High'
+                : score >= 4 ? 'Medium'
+                    : 'Low';
+        return { label, score, className: SECURITY_SEVERITY_STYLES[label] };
+    }
+
+    const level = String(finding?.level || finding?.result_level || '').toLowerCase();
+    if (level === 'error') {
+        return { label: 'Error', score: null, className: SECURITY_SEVERITY_STYLES.Error };
+    }
+    if (level === 'warning') {
+        return { label: 'Warning', score: null, className: SECURITY_SEVERITY_STYLES.Warning };
+    }
+    if (level === 'note') {
+        return { label: 'Note', score: null, className: SECURITY_SEVERITY_STYLES.Note };
+    }
+    return { label: 'Unknown', score: null, className: SECURITY_SEVERITY_STYLES.Unknown };
+};
+
 // ─── Landing Page (shown when no repo is loaded) ─────────────────────────────
 
 const LandingPage = ({ inputUrl, setInputUrl, handleLoad, loading }) => {
@@ -349,6 +386,79 @@ const UI = ({ colorMode, setColorMode }) => {
                                 <span className="max-w-md text-xs text-red-300" role="status">{securityScanError}</span>
                             )}
                         </div>
+                    )}
+                    {securityScanStatus === 'completed' && securityScanCommitSha === treeCommitSha && (
+                        <section
+                            aria-label="Security findings"
+                            className="pointer-events-auto w-[min(42rem,calc(100vw-2rem))] max-w-full overflow-hidden rounded-2xl border border-slate-700/90 bg-slate-950/95 shadow-2xl backdrop-blur-xl"
+                        >
+                            <div className="flex items-start justify-between gap-3 border-b border-slate-800 px-4 py-3">
+                                <div className="min-w-0">
+                                    <div className="flex items-center gap-2">
+                                        <ShieldCheck size={17} className="shrink-0 text-cyan-300" />
+                                        <h2 className="text-sm font-semibold text-white">Security findings</h2>
+                                    </div>
+                                    <p className="mt-1 break-all text-xs text-slate-400">
+                                        {owner}/{repoName} · commit {securityScanCommitSha.slice(0, 7)}
+                                    </p>
+                                </div>
+                                <span className="shrink-0 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200">
+                                    {securityFindings.length} total
+                                </span>
+                            </div>
+                            <div className="max-h-[38vh] space-y-2 overflow-y-auto p-3">
+                                {securityFindings.length === 0 ? (
+                                    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4 text-sm text-emerald-200">
+                                        CodeQL reported no findings for this commit.
+                                    </div>
+                                ) : securityFindings.map((finding, index) => {
+                                    const severity = getFindingSeverity(finding);
+                                    const ruleId = finding.rule_id || finding.rule_metadata?.id || finding.rule_reference?.id || 'Unknown rule';
+                                    const ruleTitle = finding.rule_metadata?.name || finding.rule_metadata?.short_description || ruleId;
+                                    const filePath = finding.file_path || finding.primary_location?.file_path || finding.primary_location?.artifact_uri;
+                                    const startLine = finding.start_line ?? finding.primary_location?.start_line;
+                                    const endLine = finding.end_line ?? finding.primary_location?.end_line;
+                                    const message = finding.message || finding.rule_metadata?.full_description || finding.rule_metadata?.short_description || 'No explanatory message was included in the SARIF result.';
+                                    const lineLabel = startLine != null
+                                        ? `Line ${startLine}${endLine != null && endLine !== startLine ? `–${endLine}` : ''}`
+                                        : 'Line unavailable';
+
+                                    return (
+                                        <article
+                                            key={`${ruleId}-${filePath || 'unknown'}-${startLine ?? 'noline'}-${index}`}
+                                            className="rounded-xl border border-slate-800 bg-slate-900/70 p-3"
+                                        >
+                                            <div className="flex flex-wrap items-start justify-between gap-2">
+                                                <div className="min-w-0 flex-1">
+                                                    <h3 className="break-words text-sm font-semibold text-slate-100">{ruleTitle}</h3>
+                                                    <code className="mt-1 inline-block break-all text-xs text-slate-400">{ruleId}</code>
+                                                </div>
+                                                <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                                                    <span className={`rounded-md border px-2 py-1 text-[11px] font-semibold ${severity.className}`}>
+                                                        {severity.label}
+                                                    </span>
+                                                    {severity.score !== null && (
+                                                        <span className="rounded-md border border-slate-700 px-2 py-1 text-[11px] text-slate-300">
+                                                            Score {severity.score.toFixed(1)}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                            </div>
+                                            <p className="mt-2 whitespace-pre-wrap break-words text-sm leading-relaxed text-slate-300">{message}</p>
+                                            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-slate-800 pt-2 text-xs">
+                                                <span className="font-medium text-slate-500">Location</span>
+                                                {filePath ? (
+                                                    <code className="max-w-full break-all text-cyan-200">{filePath}</code>
+                                                ) : (
+                                                    <span className="text-slate-400">File path unavailable</span>
+                                                )}
+                                                <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-200">{lineLabel}</span>
+                                            </div>
+                                        </article>
+                                    );
+                                })}
+                            </div>
+                        </section>
                     )}
                 </div>
 
