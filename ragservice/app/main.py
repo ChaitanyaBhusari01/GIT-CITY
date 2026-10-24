@@ -11,6 +11,7 @@ import hmac
 import json
 import os
 import tempfile
+import time
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -183,7 +184,7 @@ def _bounded_int_env(name: str, default: int, minimum: int, maximum: int) -> int
 
 
 def _prune_expired_jobs() -> None:
-    oldest_allowed = __import__("time").time() - SCAN_JOB_TTL_SECONDS
+    oldest_allowed = time.time() - SCAN_JOB_TTL_SECONDS
     expired = [
         scan_id
         for scan_id, job in security_scan_jobs.items()
@@ -263,7 +264,9 @@ def _run_security_pipeline(
         return
 
     warnings: list[str] = job["warnings"]
-    findings = job["findings"]
+    # Work on a private copy. Poll requests must not serialize dictionaries while
+    # background workers are adding source/analysis fields to them.
+    findings = [dict(finding) for finding in job["findings"]]
     source_root: Path | None = None
     database_configured = _configured_database_url()
     llm_configured = bool(os.getenv("OPENROUTER_API_KEY"))
@@ -420,9 +423,11 @@ def _run_security_pipeline(
         job["status"] = "failed"
         job["stage"] = "failed"
         job["error"] = f"{type(exc).__name__}: {str(exc)[:400]}"
+        job["findings"] = findings
         warnings.append(job["error"])
         return
 
+    job["findings"] = findings
     job["status"] = "completed"
     job["stage"] = "completed"
     if job.get("source_status") != "available":
