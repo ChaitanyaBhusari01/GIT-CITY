@@ -430,10 +430,17 @@ def _run_security_pipeline(
                             key: index_result[key]
                             for key in (
                                 "files_parsed", "files_skipped", "chunks_indexed",
+                                "chunks_truncated", "chunks_discarded", "max_indexed_chunks",
                                 "embedding_model", "embedding_dimensions",
                             )
                             if key in index_result
                         }
+                        if index_result.get("chunks_truncated"):
+                            warnings.append(
+                                "The Neon code index reached its configured chunk limit "
+                                f"({index_result.get('max_indexed_chunks')}); "
+                                f"{index_result.get('chunks_discarded')} additional chunks were skipped."
+                            )
                 except Exception as exc:
                     retrieval_enabled = False
                     job["indexing_status"] = "failed"
