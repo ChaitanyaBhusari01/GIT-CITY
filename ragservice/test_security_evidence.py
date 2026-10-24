@@ -96,6 +96,53 @@ class SecurityEvidenceTests(unittest.TestCase):
             evidence[4]["step_index"],
         )
 
+    def test_direct_evidence_payload_is_bounded(self):
+        finding = {
+            "file_path": "src/example.js",
+            "start_line": 12,
+            "source_snippet": "x" * 6000,
+            "ast_context": {
+                "construct": {
+                    "type": "call_expression",
+                    "code": "y" * 8000,
+                    "start_line": 11,
+                    "end_line": 14,
+                },
+                "symbol": None,
+            },
+            "code_flow_steps": [
+                {
+                    "file_path": "src/example.js",
+                    "start_line": line,
+                    "message": "flow " + str(line),
+                }
+                for line in range(1, 51)
+            ],
+        }
+
+        evidence = _build_direct_evidence(finding)
+        source_region = evidence[0]
+        construct = evidence[1]
+        flow_steps = [
+            item for item in evidence
+            if item["evidence_type"] == "codeql_flow_step"
+        ]
+        omitted = [
+            item for item in evidence
+            if item["evidence_type"] == "omitted_codeql_flow_steps"
+        ]
+
+        self.assertEqual(len(source_region["code"]), 5500)
+        self.assertTrue(source_region["code_truncated"])
+        self.assertEqual(source_region["original_code_characters"], 6000)
+        self.assertEqual(len(construct["code"]), 5500)
+        self.assertTrue(construct["code_truncated"])
+        self.assertEqual(construct["original_code_characters"], 8000)
+        self.assertEqual(len(flow_steps), 40)
+        self.assertEqual(len(omitted), 1)
+        self.assertEqual(omitted[0]["omitted_count"], 10)
+
+
     def test_missing_direct_context_returns_empty_list(self):
         self.assertEqual(_build_direct_evidence({}), [])
 
