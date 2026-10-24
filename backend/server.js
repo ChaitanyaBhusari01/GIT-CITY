@@ -15,6 +15,18 @@ const limiter = rateLimit({
     message: 'Too many requests from this IP, please try again later.',
     standardHeaders: true,
     legacyHeaders: false,
+    // Long-running scans poll this route every 2.5 seconds; apply a dedicated
+    // higher limit to status polling instead of exhausting the repository API quota.
+    skip: (req) => req.method === 'GET' &&
+        req.path.startsWith('/security/scan/') &&
+        req.path.split('/').length === 4,
+});
+const securityPollLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 400,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Security scan status polling limit reached. Wait before retrying.' }
 });
 const aiLimiter = rateLimit({
     windowMs: 60 * 60 * 1000,
@@ -200,7 +212,7 @@ app.post('/security/scan', aiLimiter, async (req, res) => {
     }
 });
 
-app.get('/security/scan/:scanId', async (req, res) => {
+app.get('/security/scan/:scanId', securityPollLimiter, async (req, res) => {
     const scan = securityScans.get(req.params.scanId);
     if (!scan) {
         return res.status(404).json({ error: 'Security scan not found or expired. Start a new scan.' });
