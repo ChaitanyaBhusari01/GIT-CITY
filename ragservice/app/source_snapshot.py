@@ -8,11 +8,10 @@ extracted sizes are bounded.
 from __future__ import annotations
 
 import re
-import shutil
 import tarfile
-from pathlib import Path, PurePosixPath
-from typing import BinaryIO, Iterator
 from itertools import chain
+from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 import requests
 
