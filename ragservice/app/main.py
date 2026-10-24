@@ -195,12 +195,110 @@ def _prune_expired_jobs() -> None:
 
 
 def _api_finding(finding: dict[str, Any]) -> dict[str, Any]:
-    """Return normalized evidence without duplicating the full raw SARIF result."""
-    return {
+    """Return useful normalized evidence without shipping oversized raw payloads."""
+    result = {
         key: value
         for key, value in finding.items()
-        if key not in {"raw_result", "locations", "related_locations", "code_flows"}
+        if key not in {
+            "raw_result", "locations", "related_locations", "code_flows",
+            "message_markdown",
+        }
     }
+
+    def bounded_text(value: Any, limit: int) -> tuple[Any, bool]:
+        if not isinstance(value, str) or len(value) <= limit:
+            return value, False
+        return value[:limit], True
+
+    snippet, snippet_truncated = bounded_text(result.get("source_snippet"), 5500)
+    if snippet is not None:
+        result["source_snippet"] = snippet
+    if snippet_truncated:
+        result["source_snippet_truncated"] = True
+
+    metadata = result.get("rule_metadata")
+    if isinstance(metadata, dict):
+        safe_metadata = {
+            key: metadata.get(key)
+            for key in (
+                "id", "name", "short_description", "full_description",
+                "help_uri", "tags", "component_name", "rule_index",
+            )
+            if metadata.get(key) is not None
+        }
+        for key in ("short_description", "full_description"):
+            if key in safe_metadata:
+                safe_metadata[key], was_truncated = bounded_text(
+                    safe_metadata[key], 1500 if key == "full_description" else 500
+                )
+                if was_truncated:
+                    safe_metadata[f"{key}_truncated"] = True
+        if isinstance(safe_metadata.get("tags"), list):
+            safe_metadata["tags"] = safe_metadata["tags"][:30]
+        result["rule_metadata"] = safe_metadata
+
+    location = result.get("primary_location")
+    if isinstance(location, dict):
+        result["primary_location"] = {
+            key: location.get(key)
+            for key in (
+                "file_path", "artifact_uri", "start_line", "end_line",
+                "start_column", "end_column", "message",
+            )
+            if location.get(key) is not None
+        }
+
+    context = result.get("ast_context")
+    if isinstance(context, dict):
+        compact_context: dict[str, Any] = {}
+        for part_name in ("construct", "symbol"):
+            part = context.get(part_name)
+            if not isinstance(part, dict):
+                compact_context[part_name] = None
+                continue
+            compact_part = dict(part)
+            code, was_truncated = bounded_text(compact_part.get("code"), 5500)
+            if code is not None:
+                compact_part["code"] = code
+            if was_truncated:
+                compact_part["code_truncated"] = True
+            compact_context[part_name] = compact_part
+        result["ast_context"] = compact_context
+
+    flow_steps = result.get("code_flow_steps")
+    if isinstance(flow_steps, list):
+        safe_steps = []
+        for step in flow_steps[:40]:
+            if not isinstance(step, dict):
+                continue
+            safe_step = dict(step)
+            message, was_truncated = bounded_text(safe_step.get("message"), 1000)
+            if message is not None:
+                safe_step["message"] = message
+            if was_truncated:
+                safe_step["message_truncated"] = True
+            safe_steps.append(safe_step)
+        result["code_flow_steps"] = safe_steps
+        result["code_flow_steps_omitted"] = max(0, len(flow_steps) - len(safe_steps))
+
+    related = result.get("normalized_related_locations")
+    if isinstance(related, list):
+        safe_related = []
+        for location_item in related[:20]:
+            if not isinstance(location_item, dict):
+                continue
+            safe_item = dict(location_item)
+            message, was_truncated = bounded_text(safe_item.get("message"), 1000)
+            if message is not None:
+                safe_item["message"] = message
+            if was_truncated:
+                safe_item["message_truncated"] = True
+            safe_item.pop("raw_location", None)
+            safe_related.append(safe_item)
+        result["normalized_related_locations"] = safe_related
+        result["related_locations_omitted"] = max(0, len(related) - len(safe_related))
+
+    return result
 
 
 def _job_payload(job: dict[str, Any]) -> dict[str, Any]:
