@@ -139,6 +139,7 @@ def analyze_security_finding(
     commit_sha: str,
     finding: dict[str, Any],
     top_k: int = 6,
+    retrieval_enabled: bool = True,
 ) -> dict[str, Any]:
     """Retrieve related code and ask the LLM for evidence-cited triage."""
     if not repository_id.strip():
@@ -155,16 +156,19 @@ def analyze_security_finding(
     # Retrieval is a valuable enhancement, but missing Neon credentials,
     # an unindexed revision, or an embedding-provider outage must not prevent
     # direct SARIF/source evidence from receiving an AI assessment.
-    try:
-        query_embedding = embed_text(query)
-        evidence_rows = search_chunks(
-            repository_id,
-            commit_sha,
-            query_embedding,
-            top_k=top_k,
-        )
-    except Exception as exc:
-        retrieval_error = f"{type(exc).__name__}: {str(exc)[:300]}"
+    if not retrieval_enabled:
+        retrieval_error = "Vector retrieval is not configured for this scan."
+    else:
+        try:
+            query_embedding = embed_text(query)
+            evidence_rows = search_chunks(
+                repository_id,
+                commit_sha,
+                query_embedding,
+                top_k=top_k,
+            )
+        except Exception as exc:
+            retrieval_error = f"{type(exc).__name__}: {str(exc)[:300]}"
 
     evidence = _build_direct_evidence(finding)
     direct_evidence_count = len(evidence)
@@ -267,7 +271,8 @@ CodeQL. Be concise, specific, and honest about uncertainty."""
         "direct_evidence_count": direct_evidence_count,
         "retrieved_evidence_count": len(evidence_rows),
         "retrieval_status": (
-            "unavailable" if retrieval_error
+            "not_configured" if not retrieval_enabled
+            else "unavailable" if retrieval_error
             else "completed" if evidence_rows
             else "no_matches"
         ),
