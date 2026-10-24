@@ -93,6 +93,13 @@ function securityScanPayload(scan) {
         workflow_url: scan.workflowUrl,
         finding_count: scan.findingCount ?? null,
         findings: scan.findings ?? [],
+        pipeline_stage: scan.pipelineStage ?? null,
+        processed_analyses: scan.processedAnalyses ?? 0,
+        analysis_status: scan.analysisStatus ?? null,
+        source_status: scan.sourceStatus ?? null,
+        indexing_status: scan.indexingStatus ?? null,
+        warnings: scan.warnings ?? [],
+        poll_error: scan.pollError ?? null,
         error: scan.error ?? null
     };
 }
@@ -170,6 +177,14 @@ app.post('/security/scan', aiLimiter, async (req, res) => {
             status: 'queued',
             findings: [],
             findingCount: null,
+            ragScanId: null,
+            pipelineStage: null,
+            processedAnalyses: 0,
+            analysisStatus: null,
+            sourceStatus: null,
+            indexingStatus: null,
+            warnings: [],
+            pollError: null,
             error: null,
             forwarding: false,
             createdAt: Date.now()
@@ -191,6 +206,56 @@ app.get('/security/scan/:scanId', async (req, res) => {
         return res.status(404).json({ error: 'Security scan not found or expired. Start a new scan.' });
     }
     if (scan.status === 'completed' || scan.status === 'failed' || scan.forwarding) {
+        return res.json(securityScanPayload(scan));
+    }
+
+    // Once SARIF is accepted by FastAPI, poll that analysis job rather than
+    // downloading and forwarding the same CodeQL artifact on every request.
+    if (scan.ragScanId) {
+        const ragBaseUrl = (process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000').replace(/\/+$/, '');
+        try {
+            const ragStatusResponse = await axios.get(
+                `${ragBaseUrl}/security/scan/${encodeURIComponent(scan.ragScanId)}`,
+                {
+                    headers: { 'Authorization': `Bearer ${process.env.RAG_SERVICE_TOKEN}` },
+                    timeout: 15000
+                }
+            );
+            const ragStatus = ragStatusResponse.data || {};
+            scan.pipelineStage = ragStatus.stage || scan.pipelineStage;
+            scan.processedAnalyses = Number.isInteger(ragStatus.processed_analyses)
+                ? ragStatus.processed_analyses
+                : scan.processedAnalyses;
+            scan.analysisStatus = ragStatus.analysis_status || scan.analysisStatus;
+            scan.sourceStatus = ragStatus.source_status || scan.sourceStatus;
+            scan.indexingStatus = ragStatus.indexing_status || scan.indexingStatus;
+            scan.warnings = Array.isArray(ragStatus.warnings) ? ragStatus.warnings : scan.warnings;
+
+            if (Array.isArray(ragStatus.findings)) {
+                scan.findings = ragStatus.findings;
+                scan.findingCount = Number.isInteger(ragStatus.finding_count)
+                    ? ragStatus.finding_count
+                    : scan.findings.length;
+            }
+
+            if (ragStatus.status === 'completed') {
+                scan.status = 'completed';
+                scan.error = null;
+                scan.pollError = null;
+            } else if (ragStatus.status === 'failed') {
+                scan.status = 'failed';
+                scan.error = ragStatus.error || 'Python security analysis failed.';
+                scan.pollError = null;
+            } else {
+                scan.status = 'processing_report';
+                scan.pollError = null;
+            }
+        } catch (error) {
+            // A transient status poll failure should not discard findings or
+            // trigger a duplicate SARIF upload; retry on the next UI poll.
+            scan.pollError = securityScanError(error);
+            console.warn('[SECURITY SCAN] FastAPI status poll failed:', scan.pollError);
+        }
         return res.json(securityScanPayload(scan));
     }
 
@@ -256,12 +321,36 @@ app.get('/security/scan/:scanId', async (req, res) => {
                 }
             );
 
-            scan.findings = Array.isArray(ragResponse.data.findings) ? ragResponse.data.findings : [];
-            scan.findingCount = Number.isInteger(ragResponse.data.finding_count)
-                ? ragResponse.data.finding_count
+            const ragJob = ragResponse.data || {};
+            scan.pipelineStage = ragJob.stage || null;
+            scan.processedAnalyses = Number.isInteger(ragJob.processed_analyses)
+                ? ragJob.processed_analyses
+                : 0;
+            scan.analysisStatus = ragJob.analysis_status || null;
+            scan.sourceStatus = ragJob.source_status || null;
+            scan.indexingStatus = ragJob.indexing_status || null;
+            scan.warnings = Array.isArray(ragJob.warnings) ? ragJob.warnings : [];
+
+            scan.findings = Array.isArray(ragJob.findings) ? ragJob.findings : [];
+            scan.findingCount = Number.isInteger(ragJob.finding_count)
+                ? ragJob.finding_count
                 : scan.findings.length;
-            scan.status = 'completed';
-            scan.error = null;
+
+            if (ragJob.status === 'completed') {
+                scan.status = 'completed';
+                scan.error = null;
+            } else if (ragJob.status === 'failed') {
+                scan.status = 'failed';
+                scan.error = ragJob.error || 'Python security analysis failed.';
+            } else if (ragJob.scan_id) {
+                // The SARIF is now in Python's background analysis pipeline.
+                // Keep the scan open and poll by this ID on subsequent requests.
+                scan.ragScanId = ragJob.scan_id;
+                scan.status = 'processing_report';
+                scan.error = null;
+            } else {
+                throw new Error('Python did not return a security-analysis job ID or terminal status.');
+            }
         } catch (error) {
             scan.status = 'failed';
             scan.error = securityScanError(error);
