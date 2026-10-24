@@ -190,7 +190,14 @@ const UI = ({ colorMode, setColorMode }) => {
     const [showContributors, setShowContributors] = useState(false);
     const [showLanguageFilter, setShowLanguageFilter] = useState(false);
     const [showTools, setShowTools] = useState(false);
+    const [showSecurityFindings, setShowSecurityFindings] = useState(true);
     const toolsPopoverRef = React.useRef(null);
+
+    React.useEffect(() => {
+        if (securityScanStatus === 'completed' && securityScanCommitSha === treeCommitSha) {
+            setShowSecurityFindings(true);
+        }
+    }, [securityScanStatus, securityScanCommitSha, treeCommitSha]);
 
     const closeOtherPanels = (except) => {
         if (except !== 'graph' && showCommitGraph) toggleCommitGraph();
@@ -378,16 +385,27 @@ const UI = ({ colorMode, setColorMode }) => {
                                 </span>
                             )}
                             {securityScanStatus === 'completed' && securityScanCommitSha === treeCommitSha && (
-                                <span className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-200">
-                                    {securityFindings.length} finding{securityFindings.length === 1 ? '' : 's'}
-                                </span>
+                                <>
+                                    <span className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1.5 text-xs text-emerald-200">
+                                        {securityFindings.length} finding{securityFindings.length === 1 ? '' : 's'}
+                                    </span>
+                                    {!showSecurityFindings && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowSecurityFindings(true)}
+                                            className="rounded-lg border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200 transition hover:border-cyan-500/50 hover:text-cyan-200"
+                                        >
+                                            View findings
+                                        </button>
+                                    )}
+                                </>
                             )}
                             {securityScanStatus === 'failed' && securityScanError && (
                                 <span className="max-w-md text-xs text-red-300" role="status">{securityScanError}</span>
                             )}
                         </div>
                     )}
-                    {securityScanStatus === 'completed' && securityScanCommitSha === treeCommitSha && (
+                    {showSecurityFindings && securityScanStatus === 'completed' && securityScanCommitSha === treeCommitSha && (
                         <section
                             aria-label="Security findings"
                             className="pointer-events-auto w-[min(42rem,calc(100vw-2rem))] max-w-full overflow-hidden rounded-2xl border border-slate-700/90 bg-slate-950/95 shadow-2xl backdrop-blur-xl"
@@ -402,9 +420,20 @@ const UI = ({ colorMode, setColorMode }) => {
                                         {owner}/{repoName} · commit {securityScanCommitSha.slice(0, 7)}
                                     </p>
                                 </div>
-                                <span className="shrink-0 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200">
-                                    {securityFindings.length} total
-                                </span>
+                                <div className="flex shrink-0 items-center gap-2">
+                                    <span className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs text-emerald-200">
+                                        {securityFindings.length} total
+                                    </span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowSecurityFindings(false)}
+                                        aria-label="Close security findings"
+                                        title="Hide security findings"
+                                        className="rounded-lg border border-slate-700 p-1.5 text-slate-400 transition hover:border-slate-500 hover:bg-slate-800 hover:text-white focus:outline-none focus:ring-2 focus:ring-cyan-500/50"
+                                    >
+                                        <X size={16} />
+                                    </button>
+                                </div>
                             </div>
                             <div className="max-h-[38vh] space-y-2 overflow-y-auto p-3">
                                 {securityFindings.length === 0 ? (
