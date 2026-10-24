@@ -29,6 +29,7 @@ Required for Neon pgvector indexing and semantic retrieval:
 Optional limits:
 - `SECURITY_AI_MAX_FINDINGS`: maximum findings analyzed by AI per scan (default 20, maximum 100).
 - `SECURITY_ANALYSIS_WORKERS`: concurrent AI workers (default 3, maximum 3).
+- `GITCITY_MAX_INDEXED_CHUNKS`: maximum code chunks embedded per repository revision (default 10,000, hard maximum 50,000). If reached, the scan includes an indexing warning; CodeQL findings remain available.
 
 If the OpenRouter key is absent, SARIF findings and source/AST context are still returned with `analysis_status=not_configured`. If Neon is unavailable, AI can still analyze direct SARIF/source evidence, but the result reports vector retrieval as unavailable; it must not claim semantic retrieval happened.
 
