@@ -10,6 +10,11 @@ from app.llm import generate_chat_completion
 from app.retrieval import search_chunks
 
 
+MAX_DIRECT_EVIDENCE_CODE_CHARS = 5500
+MAX_DIRECT_EVIDENCE_MESSAGE_CHARS = 1500
+MAX_CODE_FLOW_STEPS = 40
+
+
 def _finding_query(finding: dict[str, Any]) -> str:
     """Build a retrieval query from normalized CodeQL and AST fields."""
     context = finding.get("ast_context") or {}
@@ -54,6 +59,15 @@ def _build_direct_evidence(
         message: str | None = None,
         **extra: Any,
     ) -> None:
+        # AST symbols can be whole functions/classes. Cap prompt evidence size
+        # while retaining the finding's precise source and line metadata.
+        if isinstance(code, str) and len(code) > MAX_DIRECT_EVIDENCE_CODE_CHARS:
+            code = code[:MAX_DIRECT_EVIDENCE_CODE_CHARS]
+            extra["code_truncated"] = True
+            extra["original_code_characters"] = len(code) + 1
+        if isinstance(message, str) and len(message) > MAX_DIRECT_EVIDENCE_MESSAGE_CHARS:
+            message = message[:MAX_DIRECT_EVIDENCE_MESSAGE_CHARS]
+            extra["message_truncated"] = True
         evidence.append({
             "id": f"E{len(evidence) + 1}",
             "evidence_type": evidence_type,
@@ -115,8 +129,9 @@ def _build_direct_evidence(
             symbol_type=symbol.get("type"),
         )
 
-    # Preserve the order of CodeQL's reported flow steps.
-    for step in finding.get("code_flow_steps") or []:
+    # Preserve order but bound how many flow locations enter the model prompt.
+    flow_steps = finding.get("code_flow_steps") or []
+    for step in flow_steps[:MAX_CODE_FLOW_STEPS]:
         add_evidence(
             "codeql_flow_step",
             "SARIF code flow",
@@ -129,6 +144,17 @@ def _build_direct_evidence(
             flow_index=step.get("flow_index"),
             thread_flow_index=step.get("thread_flow_index"),
             step_index=step.get("step_index"),
+        )
+
+    if len(flow_steps) > MAX_CODE_FLOW_STEPS:
+        add_evidence(
+            "omitted_codeql_flow_steps",
+            "SARIF code flow",
+            message=(
+                f"{len(flow_steps) - MAX_CODE_FLOW_STEPS} additional flow steps "
+                "were omitted to keep AI evidence bounded."
+            ),
+            omitted_count=len(flow_steps) - MAX_CODE_FLOW_STEPS,
         )
 
     return evidence
