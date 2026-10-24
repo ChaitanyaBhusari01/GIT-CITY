@@ -120,13 +120,22 @@ def index_repository(
     repo_path: str | Path,
     *,
     repository_id: str | None = None,
+    commit_sha: str | None = None,
 ) -> dict[str, Any]:
-    """Index the current Git revision of a local repository into Neon."""
+    """Index a local source snapshot under its exact Git revision in Neon.
+
+    When commit_sha is supplied, repo_path may be a verified source archive
+    rather than a Git checkout. This lets security analysis index the exact
+    revision CodeQL scanned without running repository code or requiring .git.
+    """
     repo_root = Path(repo_path).expanduser().resolve()
     if not repo_root.is_dir():
         raise ValueError(f"Repository directory does not exist: {repo_root}")
 
-    commit_sha = resolve_commit_sha(repo_root)
+    resolved_commit_sha = commit_sha or resolve_commit_sha(repo_root)
+    if not re.fullmatch(r"[0-9a-fA-F]{40,64}", resolved_commit_sha):
+        raise ValueError("commit_sha must be a full Git commit SHA.")
+    commit_sha = resolved_commit_sha.lower()
     resolved_repo_id = repository_id or resolve_repository_id(repo_root)
 
     chunks: list[dict[str, Any]] = []
