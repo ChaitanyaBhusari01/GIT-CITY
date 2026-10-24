@@ -20,6 +20,19 @@ MAX_FILE_BYTES = 1_000_000
 MAX_EMBEDDING_CHARS = 12_000
 FALLBACK_CHUNK_LINES = 100
 FALLBACK_OVERLAP_LINES = 12
+DEFAULT_MAX_INDEXED_CHUNKS = 10_000
+MAX_INDEXED_CHUNKS_LIMIT = 50_000
+
+
+def _configured_chunk_limit() -> int:
+    try:
+        configured = int(os.getenv("GITCITY_MAX_INDEXED_CHUNKS", str(DEFAULT_MAX_INDEXED_CHUNKS)))
+    except (TypeError, ValueError):
+        configured = DEFAULT_MAX_INDEXED_CHUNKS
+    return max(1, min(configured, MAX_INDEXED_CHUNKS_LIMIT))
+
+
+MAX_INDEXED_CHUNKS = _configured_chunk_limit()
 
 
 def _git_output(repo_root: Path, *args: str) -> str:
@@ -139,6 +152,8 @@ def index_repository(
     resolved_repo_id = repository_id or resolve_repository_id(repo_root)
 
     chunks: list[dict[str, Any]] = []
+    chunks_truncated = False
+    chunks_discarded = 0
     files_seen = 0
     files_skipped = 0
     file_errors: list[dict[str, str]] = []
@@ -192,7 +207,17 @@ def index_repository(
                     chunk = dict(original_chunk)
                     chunk["repository_id"] = resolved_repo_id
                     chunk["commit_sha"] = commit_sha
-                    chunks.extend(_split_oversized_chunk(chunk))
+                    split_chunks = _split_oversized_chunk(chunk)
+                    available_slots = MAX_INDEXED_CHUNKS - len(chunks)
+                    if available_slots <= 0:
+                        chunks_truncated = True
+                        chunks_discarded += len(split_chunks)
+                        continue
+
+                    chunks.extend(split_chunks[:available_slots])
+                    if len(split_chunks) > available_slots:
+                        chunks_truncated = True
+                        chunks_discarded += len(split_chunks) - available_slots
 
             except Exception as exc:
                 files_skipped += 1
@@ -250,6 +275,9 @@ def index_repository(
         "files_parsed": files_seen,
         "files_skipped": files_skipped,
         "chunks_indexed": len(rows),
+        "chunks_truncated": chunks_truncated,
+        "chunks_discarded": chunks_discarded,
+        "max_indexed_chunks": MAX_INDEXED_CHUNKS,
         "embedding_model": EMBEDDING_MODEL,
         "embedding_dimensions": len(vectors[0]),
         "file_errors": file_errors,
