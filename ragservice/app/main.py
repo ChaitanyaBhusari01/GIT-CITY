@@ -312,7 +312,9 @@ def _run_security_pipeline(
             # provider and a database URL are available. Never index a different
             # revision merely because HEAD in a local checkout has moved.
             retrieval_enabled = database_configured and llm_configured
-            if source_root is not None and database_configured and llm_configured:
+            if source_root is None:
+                job["indexing_status"] = "source_unavailable"
+            elif database_configured and llm_configured:
                 job["stage"] = "indexing_source"
                 try:
                     ensure_schema()
@@ -340,9 +342,7 @@ def _run_security_pipeline(
                     warnings.append(
                         f"Neon indexing is unavailable: {type(exc).__name__}: {str(exc)[:240]}"
                     )
-            elif not database_configured:
-                job["indexing_status"] = "not_configured"
-            elif not llm_configured:
+            elif not database_configured or not llm_configured:
                 job["indexing_status"] = "not_configured"
 
             # If the LLM credential is absent, return parsed and enriched
