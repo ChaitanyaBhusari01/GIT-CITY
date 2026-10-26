@@ -506,11 +506,12 @@ def _run_security_pipeline(
                 except Exception as exc:
                     retrieval_enabled = False
                     job["indexing_status"] = "failed"
-                    job["indexing_step"] = "failed"
+                    failed_step = job.get("indexing_step", "unknown")
                     logger.exception(
                         "[security:%s] indexing failed at step=%s",
-                        scan_id, job.get("indexing_step"),
+                        scan_id, failed_step,
                     )
+                    job["indexing_step"] = f"failed:{failed_step}"
                     warnings.append(
                         f"Neon indexing is unavailable: {type(exc).__name__}: {str(exc)[:240]}"
                     )
