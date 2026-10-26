@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Any
 
 import psycopg
@@ -14,6 +16,16 @@ from app.embeddings import EMBEDDING_DIMENSIONS, EMBEDDING_MODEL
 
 
 TABLE_NAME = "gitcity_code_chunks"
+logger = logging.getLogger(__name__)
+
+
+def _bounded_timeout(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(value, maximum))
+
 
 
 def _database_url() -> str:
@@ -30,16 +42,55 @@ def _database_url() -> str:
     return url
 
 
-def connect_database() -> psycopg.Connection:
-    """Open a connection and register pgvector's psycopg adapter."""
-    conn = psycopg.connect(_database_url(), row_factory=dict_row)
+def connect_database(*, ensure_vector_extension: bool = False) -> psycopg.Connection:
+    """Open a bounded PostgreSQL connection and register pgvector.
+
+    Vector extension creation is opt-in and happens during schema setup only,
+    not on every read/write connection.
+    """
+    connect_timeout = _bounded_timeout(
+        "GITCITY_DB_CONNECT_TIMEOUT_SECONDS", default=8, minimum=1, maximum=30
+    )
+    statement_timeout_ms = _bounded_timeout(
+        "GITCITY_DB_STATEMENT_TIMEOUT_MS", default=30000, minimum=1000, maximum=120000
+    )
+    lock_timeout_ms = _bounded_timeout(
+        "GITCITY_DB_LOCK_TIMEOUT_MS", default=5000, minimum=250, maximum=30000
+    )
+    idle_timeout_ms = _bounded_timeout(
+        "GITCITY_DB_IDLE_TRANSACTION_TIMEOUT_MS", default=30000, minimum=1000, maximum=120000
+    )
+    options = (
+        f"-c statement_timeout={statement_timeout_ms} "
+        f"-c lock_timeout={lock_timeout_ms} "
+        f"-c idle_in_transaction_session_timeout={idle_timeout_ms}"
+    )
+
+    started = time.perf_counter()
+    conn = None
     try:
-        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        conn.commit()
+        conn = psycopg.connect(
+            _database_url(),
+            row_factory=dict_row,
+            connect_timeout=connect_timeout,
+            options=options,
+        )
+        if ensure_vector_extension:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            conn.commit()
         register_vector(conn)
+        logger.info(
+            "[db] Connection ready in %.2fs (connect_timeout=%ss, statement_timeout=%sms, lock_timeout=%sms)",
+            time.perf_counter() - started,
+            connect_timeout,
+            statement_timeout_ms,
+            lock_timeout_ms,
+        )
         return conn
     except Exception:
-        conn.close()
+        logger.exception("[db] Connection/setup failed after %.2fs", time.perf_counter() - started)
+        if conn is not None:
+            conn.close()
         raise
 
 
@@ -49,7 +100,7 @@ def ensure_schema() -> None:
     if dimensions < 1:
         raise ValueError("Embedding dimensions must be positive.")
 
-    conn = connect_database()
+    conn = connect_database(ensure_vector_extension=True)
     try:
         with conn.cursor() as cursor:
             cursor.execute(
