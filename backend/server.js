@@ -110,6 +110,7 @@ function securityScanPayload(scan) {
         analysis_status: scan.analysisStatus ?? null,
         source_status: scan.sourceStatus ?? null,
         indexing_status: scan.indexingStatus ?? null,
+        indexing_step: scan.indexingStep ?? null,
         warnings: scan.warnings ?? [],
         poll_error: scan.pollError ?? null,
         error: scan.error ?? null
@@ -195,6 +196,7 @@ app.post('/security/scan', aiLimiter, async (req, res) => {
             analysisStatus: null,
             sourceStatus: null,
             indexingStatus: null,
+            indexingStep: null,
             warnings: [],
             pollError: null,
             error: null,
@@ -241,6 +243,7 @@ app.get('/security/scan/:scanId', securityPollLimiter, async (req, res) => {
             scan.analysisStatus = ragStatus.analysis_status || scan.analysisStatus;
             scan.sourceStatus = ragStatus.source_status || scan.sourceStatus;
             scan.indexingStatus = ragStatus.indexing_status || scan.indexingStatus;
+            scan.indexingStep = ragStatus.indexing_step || scan.indexingStep;
             scan.warnings = Array.isArray(ragStatus.warnings) ? ragStatus.warnings : scan.warnings;
 
             if (Array.isArray(ragStatus.findings)) {
@@ -341,6 +344,7 @@ app.get('/security/scan/:scanId', securityPollLimiter, async (req, res) => {
             scan.analysisStatus = ragJob.analysis_status || null;
             scan.sourceStatus = ragJob.source_status || null;
             scan.indexingStatus = ragJob.indexing_status || null;
+            scan.indexingStep = ragJob.indexing_step || null;
             scan.warnings = Array.isArray(ragJob.warnings) ? ragJob.warnings : [];
 
             scan.findings = Array.isArray(ragJob.findings) ? ragJob.findings : [];
