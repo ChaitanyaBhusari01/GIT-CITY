@@ -60,12 +60,9 @@ def connect_database(*, ensure_vector_extension: bool = False) -> psycopg.Connec
     idle_timeout_ms = _bounded_timeout(
         "GITCITY_DB_IDLE_TRANSACTION_TIMEOUT_MS", default=30000, minimum=1000, maximum=120000
     )
-    options = (
-        f"-c statement_timeout={statement_timeout_ms} "
-        f"-c lock_timeout={lock_timeout_ms} "
-        f"-c idle_in_transaction_session_timeout={idle_timeout_ms}"
-    )
-
+    # Neon’s transaction pooler rejects these GUCs as startup options.
+    # Set them transaction-locally instead; the settings apply to all work in
+    # this transaction without relying on session state across pooled requests.
     started = time.perf_counter()
     conn = None
     try:
@@ -73,7 +70,19 @@ def connect_database(*, ensure_vector_extension: bool = False) -> psycopg.Connec
             _database_url(),
             row_factory=dict_row,
             connect_timeout=connect_timeout,
-            options=options,
+        )
+        conn.execute(
+            """
+            SELECT
+                set_config('statement_timeout', %s, true),
+                set_config('lock_timeout', %s, true),
+                set_config('idle_in_transaction_session_timeout', %s, true)
+            """,
+            (
+                f"{statement_timeout_ms}ms",
+                f"{lock_timeout_ms}ms",
+                f"{idle_timeout_ms}ms",
+            ),
         )
         if ensure_vector_extension:
             conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
