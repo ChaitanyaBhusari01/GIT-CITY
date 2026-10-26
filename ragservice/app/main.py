@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import logging
 import os
 import tempfile
 import time
@@ -31,6 +32,9 @@ from app.sarif_parser import parse_sarif  # noqa: E402
 from app.security_service import analyze_security_finding  # noqa: E402
 from app.source_snapshot import download_repository_source  # noqa: E402
 from app.vector_store import count_chunks, ensure_schema  # noqa: E402
+
+
+logger = logging.getLogger("gitcity.security")
 
 
 app = FastAPI(
@@ -313,6 +317,7 @@ def _job_payload(job: dict[str, Any]) -> dict[str, Any]:
         "analysis_limit": job.get("analysis_limit"),
         "source_status": job.get("source_status", "pending"),
         "indexing_status": job.get("indexing_status", "not_started"),
+        "indexing_step": job.get("indexing_step", "not_started"),
         "analysis_status": job.get("analysis_status", "pending"),
         "warnings": job.get("warnings", []),
         "error": job.get("error"),
@@ -368,6 +373,7 @@ def _run_security_pipeline(
     source_root: Path | None = None
     database_configured = _configured_database_url()
     llm_configured = bool(os.getenv("OPENROUTER_API_KEY"))
+    job["indexing_step"] = "not_started"
     job["analysis_limit"] = _bounded_int_env(
         "SECURITY_AI_MAX_FINDINGS", DEFAULT_AI_FINDING_LIMIT, 1, MAX_AI_FINDING_LIMIT
     )
@@ -377,20 +383,35 @@ def _run_security_pipeline(
         job["stage"] = "source_snapshot"
         with tempfile.TemporaryDirectory(prefix="gitcity-security-") as temp_dir:
             try:
+                step_started = time.perf_counter()
+                logger.info(
+                    "[security:%s] START source_snapshot repo=%s commit=%s",
+                    scan_id, repository_id, commit_sha,
+                )
                 source_root = download_repository_source(
                     repository_id,
                     commit_sha,
                     temp_dir,
                 )
                 job["source_status"] = "available"
+                logger.info(
+                    "[security:%s] DONE source_snapshot duration=%.2fs",
+                    scan_id, time.perf_counter() - step_started,
+                )
             except Exception as exc:
                 job["source_status"] = "unavailable"
+                logger.exception("[security:%s] source_snapshot failed", scan_id)
                 warnings.append(
                     f"Source snapshot could not be loaded: {type(exc).__name__}: {str(exc)[:240]}"
                 )
 
             if source_root is not None:
                 job["stage"] = "source_and_ast_context"
+                enrich_started = time.perf_counter()
+                logger.info(
+                    "[security:%s] START source_and_ast_context findings=%d",
+                    scan_id, len(findings),
+                )
                 enriched_findings: list[dict[str, Any]] = []
                 for finding in findings:
                     try:
@@ -398,6 +419,10 @@ def _run_security_pipeline(
                             enrich_finding_with_source(finding, source_root)
                         )
                     except Exception as exc:
+                        logger.exception(
+                            "[security:%s] source context enrichment failed path=%s line=%s",
+                            scan_id, finding.get("file_path"), finding.get("start_line"),
+                        )
                         enriched_findings.append(
                             _mark_context_unavailable(
                                 finding,
@@ -405,6 +430,10 @@ def _run_security_pipeline(
                             )
                         )
                 findings[:] = enriched_findings
+                logger.info(
+                    "[security:%s] DONE source_and_ast_context findings=%d duration=%.2fs",
+                    scan_id, len(findings), time.perf_counter() - enrich_started,
+                )
 
             # Index the same source snapshot only when both the embedding
             # provider and a database URL are available. Never index a different
@@ -415,16 +444,49 @@ def _run_security_pipeline(
             elif database_configured and llm_configured:
                 job["stage"] = "indexing_source"
                 try:
+                    job["indexing_status"] = "processing"
+                    job["indexing_step"] = "ensure_schema"
+                    step_started = time.perf_counter()
+                    logger.info("[security:%s] START indexing step=ensure_schema", scan_id)
                     ensure_schema()
+                    logger.info(
+                        "[security:%s] DONE indexing step=ensure_schema duration=%.2fs",
+                        scan_id, time.perf_counter() - step_started,
+                    )
+
+                    job["indexing_step"] = "count_chunks"
+                    step_started = time.perf_counter()
+                    logger.info("[security:%s] START indexing step=count_chunks", scan_id)
                     existing_chunks = count_chunks(repository_id, commit_sha)
+                    logger.info(
+                        "[security:%s] DONE indexing step=count_chunks existing_chunks=%d duration=%.2fs",
+                        scan_id, existing_chunks, time.perf_counter() - step_started,
+                    )
+
                     if existing_chunks > 0:
                         job["indexing_status"] = "already_indexed"
+                        job["indexing_step"] = "already_indexed"
                     else:
+                        job["indexing_step"] = "parse_chunk_embed_persist"
+                        step_started = time.perf_counter()
+                        logger.info(
+                            "[security:%s] START indexing step=parse_chunk_embed_persist",
+                            scan_id,
+                        )
                         index_result = index_repository(
                             source_root,
                             repository_id=repository_id,
                             commit_sha=commit_sha,
                         )
+                        logger.info(
+                            "[security:%s] DONE indexing step=parse_chunk_embed_persist duration=%.2fs chunks=%s files_parsed=%s files_skipped=%s",
+                            scan_id,
+                            time.perf_counter() - step_started,
+                            index_result.get("chunks_indexed"),
+                            index_result.get("files_parsed"),
+                            index_result.get("files_skipped"),
+                        )
+                        job["indexing_step"] = "indexed"
                         job["indexing_status"] = "indexed"
                         job["indexing_summary"] = {
                             key: index_result[key]
@@ -444,6 +506,11 @@ def _run_security_pipeline(
                 except Exception as exc:
                     retrieval_enabled = False
                     job["indexing_status"] = "failed"
+                    job["indexing_step"] = "failed"
+                    logger.exception(
+                        "[security:%s] indexing failed at step=%s",
+                        scan_id, job.get("indexing_step"),
+                    )
                     warnings.append(
                         f"Neon indexing is unavailable: {type(exc).__name__}: {str(exc)[:240]}"
                     )
