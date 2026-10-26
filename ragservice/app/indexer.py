@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +17,8 @@ from app.file_filter import IGNORED_DIRECTORIES, classify_file
 from app.parser import parse_code
 from app.vector_store import ensure_schema, replace_commit_chunks
 
+
+logger = logging.getLogger(__name__)
 
 MAX_FILE_BYTES = 1_000_000
 MAX_EMBEDDING_CHARS = 12_000
@@ -158,6 +162,11 @@ def index_repository(
     files_skipped = 0
     file_errors: list[dict[str, str]] = []
 
+    walk_started = time.perf_counter()
+    logger.info(
+        "[indexer] START source_walk repo=%s commit=%s max_chunks=%d",
+        resolved_repo_id, commit_sha, MAX_INDEXED_CHUNKS,
+    )
     for current_root, directory_names, file_names in os.walk(
         repo_root, topdown=True, followlinks=False
     ):
@@ -194,6 +203,11 @@ def index_repository(
                     continue
 
                 files_seen += 1
+                if files_seen % 50 == 0:
+                    logger.info(
+                        "[indexer] source_walk_progress files_parsed=%d chunks_collected=%d duration=%.2fs",
+                        files_seen, len(chunks), time.perf_counter() - walk_started,
+                    )
                 language = classification["language"]
                 tree = parse_code(code, language)
                 file_chunks = chunk_code(
@@ -229,6 +243,12 @@ def index_repository(
                         }
                     )
 
+    logger.info(
+        "[indexer] DONE source_walk files_parsed=%d files_skipped=%d chunks_collected=%d chunks_discarded=%d truncated=%s duration=%.2fs",
+        files_seen, files_skipped, len(chunks), chunks_discarded,
+        chunks_truncated, time.perf_counter() - walk_started,
+    )
+
     if not chunks:
         raise RuntimeError(
             "No source chunks were produced. Confirm the repository has "
@@ -236,10 +256,36 @@ def index_repository(
             f"Files parsed: {files_seen}; skipped: {files_skipped}."
         )
 
-    ensure_schema()
+    schema_started = time.perf_counter()
+    logger.info("[indexer] START ensure_schema")
+    try:
+        ensure_schema()
+    except Exception:
+        logger.exception("[indexer] ensure_schema failed")
+        raise
+    logger.info(
+        "[indexer] DONE ensure_schema duration=%.2fs",
+        time.perf_counter() - schema_started,
+    )
 
     embedding_inputs = [_embedding_input(chunk) for chunk in chunks]
-    vectors = embed_texts(embedding_inputs)
+    embedding_started = time.perf_counter()
+    logger.info(
+        "[indexer] START embeddings chunks=%d batches_of=%d model=%s",
+        len(embedding_inputs), 32, EMBEDDING_MODEL,
+    )
+    try:
+        vectors = embed_texts(embedding_inputs)
+    except Exception:
+        logger.exception(
+            "[indexer] embeddings failed after %.2fs for %d chunks",
+            time.perf_counter() - embedding_started, len(embedding_inputs),
+        )
+        raise
+    logger.info(
+        "[indexer] DONE embeddings chunks=%d duration=%.2fs",
+        len(vectors), time.perf_counter() - embedding_started,
+    )
 
     if len(vectors) != len(chunks):
         raise RuntimeError("Embedding count did not match the source chunk count.")
@@ -267,7 +313,23 @@ def index_repository(
             }
         )
 
-    replace_commit_chunks(resolved_repo_id, commit_sha, rows)
+    persist_started = time.perf_counter()
+    logger.info(
+        "[indexer] START vector_persistence rows=%d repo=%s commit=%s",
+        len(rows), resolved_repo_id, commit_sha,
+    )
+    try:
+        replace_commit_chunks(resolved_repo_id, commit_sha, rows)
+    except Exception:
+        logger.exception(
+            "[indexer] vector_persistence failed after %.2fs rows=%d",
+            time.perf_counter() - persist_started, len(rows),
+        )
+        raise
+    logger.info(
+        "[indexer] DONE vector_persistence rows=%d duration=%.2fs",
+        len(rows), time.perf_counter() - persist_started,
+    )
 
     return {
         "repository_id": resolved_repo_id,
